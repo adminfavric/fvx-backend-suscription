@@ -1,0 +1,178 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-04-25 19:39-0400\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+msgid "Admin"
+msgstr "Admin"
+
+msgid "Editor"
+msgstr "Editor"
+
+msgid "Viewer"
+msgstr "Viewer"
+
+msgid "Allowed roles"
+msgstr ""
+
+msgid ""
+"Empty: any authenticated user can see this item. If you select roles, only "
+"users with that effective role (profile or organization) will see it."
+msgstr ""
+
+msgid ""
+"Esta cuenta está desactivada (is_active=false). Un administrador debe marcar "
+"de nuevo «activo» al usuario en Django Admin o en la base de datos."
+msgstr ""
+
+msgid "active"
+msgstr ""
+
+msgid "uuid"
+msgstr ""
+
+msgid "Format: XXX-uuid4. Assigned on first save."
+msgstr ""
+
+msgid "name"
+msgstr ""
+
+msgid "slug"
+msgstr ""
+
+msgid "photo URL"
+msgstr ""
+
+msgid "description"
+msgstr ""
+
+msgid "email"
+msgstr ""
+
+msgid "phone"
+msgstr ""
+
+msgid "address"
+msgstr ""
+
+msgid "website"
+msgstr ""
+
+msgid "logo URL"
+msgstr ""
+
+msgid "organization"
+msgstr ""
+
+msgid "organizations"
+msgstr ""
+
+msgid "default menu"
+msgstr ""
+
+msgid ""
+"If enabled, becomes the only default menu; all other menus are cleared. "
+"Shown to users without any organization membership."
+msgstr ""
+
+msgid "menu"
+msgstr ""
+
+msgid "menus"
+msgstr ""
+
+msgid "order"
+msgstr ""
+
+msgid "menu section"
+msgstr ""
+
+msgid "menu sections"
+msgstr ""
+
+msgid "section"
+msgstr ""
+
+msgid "route"
+msgstr ""
+
+msgid "Path without domain, e.g. /users"
+msgstr ""
+
+msgid "icon"
+msgstr ""
+
+msgid ""
+"Nombre del glifo (ligature) de Google Material Symbols, en snake_case; es el "
+"mismo texto que usa el frontend en Angular Material (`<mat-icon>nombre</mat-"
+"icon>`). En el admin puedes usar las sugerencias al escribir (lista corta) o "
+"el enlace al catálogo. Catálogo: https://fonts.google.com/icons — Vacío: el "
+"frontend muestra el icono «label»."
+msgstr ""
+
+msgid "allowed roles"
+msgstr ""
+
+msgid ""
+"JSON list of role codes, e.g. [\"VIEWER\",\"ADMIN\"]. Empty = all roles."
+msgstr ""
+
+msgid "menu item"
+msgstr ""
+
+msgid "menu items"
+msgstr ""
+
+msgid "user"
+msgstr ""
+
+msgid "Usuario cuyos permisos tendrán las llamadas con esta clave."
+msgstr ""
+
+msgid "created by"
+msgstr ""
+
+msgid "Etiqueta para identificar la integración (ej. app móvil X)."
+msgstr ""
+
+msgid "prefix"
+msgstr ""
+
+msgid "Segmento público de la clave; forma parte del valor mostrado al crear."
+msgstr ""
+
+msgid "secret hash"
+msgstr ""
+
+msgid "last used at"
+msgstr ""
+
+msgid "API key"
+msgstr ""
+
+msgid "API keys"
+msgstr ""
+
+msgid "No puede desactivar su propia cuenta mientras está autenticado."
+msgstr ""
+
+msgid ""
+"Debe permanecer al menos un superusuario activo. Active otro superusuario "
+"antes de desactivar este."
+msgstr ""
+
+msgid "Abrir catálogo completo (Material Symbols)"
+msgstr ""

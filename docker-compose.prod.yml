@@ -1,0 +1,23 @@
+# Overlay para `./start.sh remote` (junto con docker-compose.yml).
+# Ajusta .env (DEBUG=False, ALLOWED_HOSTS, secretos, CORS, etc.) antes de levantar.
+# El mapeo de puertos del servicio `web` viene solo de docker-compose.yml (p. ej. 8080:8080).
+
+version: '3.8'
+
+services:
+  web:
+    restart: unless-stopped
+    environment:
+      # Selecciona core.settings.prod (DEBUG=False forzado + hardening explícito).
+      # El docker-compose.yml base ya pasa DJANGO_SETTINGS_MODULE=core.settings;
+      # DJANGO_ENV decide el overlay activo. Ver core/settings/__init__.py.
+      - DJANGO_ENV=prod
+    command:
+      - gunicorn
+      - core.wsgi:application
+      - --bind
+      - 0.0.0.0:8080
+      - --workers
+      - '3'
+      - --timeout
+      - '120'

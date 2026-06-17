@@ -1,0 +1,16 @@
+# Ruff — linter + formatter del backend (reemplaza flake8 + black + isort).
+#   ruff check .          → lint
+#   ruff check . --fix    → arregla lo autofixable
+#   ruff format .         → formatea (estilo Black-compatible)
+# Instalar: pip install -r requirements-dev.txt
+target-version = "py311"
+line-length = 100
+
+# Migraciones y el código de terceros no se lintean (autogenerado / vendor).
+extend-exclude = ["*/migrations/*", "staticfiles", "media"]
+
+[lint]
+# Reglas por defecto (pycodestyle E, pyflakes F). Subir el set (I, UP, B, …)
+# cuando el equipo quiera, corriendo `ruff check --fix` para el ordering de imports.
+# E501 lo gobierna el formateador; no hacemos fallar el lint por largo de línea.
+ignore = ["E501"]

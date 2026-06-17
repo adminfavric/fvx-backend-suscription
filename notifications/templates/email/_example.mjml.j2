@@ -1,0 +1,25 @@
+{# Template de ejemplo / referencia.
+
+   No se usa en producción; sirve como:
+   - Smoke test del pipeline MJML+Jinja+inlining (manage.py shell)
+   - Plantilla para copiar/pegar cuando crees un template real
+
+   Inputs esperados en el context:
+   - user_name (str)
+   - action_url (str)
+#}
+{% extends "email/_layout.mjml.j2" %}
+
+{% block preview %}Ejemplo de email — {{ user_name }}{% endblock %}
+
+{% block content %}
+  <mj-text font-size="16px" font-weight="600">
+    Hola {{ user_name }},
+  </mj-text>
+  <mj-text>
+    Este es un template de ejemplo. Reemplázalo por uno propio del proyecto
+    consumidor cuando lo necesites. Ver
+    <code>fvx-backend/docs/email.md</code> §8 para la convención.
+  </mj-text>
+  <mj-button href="{{ action_url }}">Ver más</mj-button>
+{% endblock %}

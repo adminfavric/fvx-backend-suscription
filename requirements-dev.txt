@@ -1,0 +1,6 @@
+# Dependencias SOLO de desarrollo / CI (no se instalan en la imagen de prod).
+#   pip install -r requirements-dev.txt
+-r requirements.txt
+
+# Lint + format (ver ruff.toml)
+ruff==0.6.9

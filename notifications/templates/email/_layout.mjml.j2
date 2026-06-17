@@ -1,0 +1,61 @@
+{# Layout base que extienden los templates concretos.
+
+   Estructura: header (con título) → contenido → footer. Cada bloque puede
+   sobreescribirse en el template hijo. Los estilos viven en mj-attributes
+   para que se hereden por todos los componentes; cualquier override va en
+   el template específico.
+
+   Variables que el caller puede pasar:
+   - subject         → usado como <title> por default
+   - app_name        → texto del header (default: "Notification")
+
+   Bloques sobrescribibles:
+   - title    → <title> del HTML (default: subject)
+   - preview  → <mj-preview> (texto en el preview del cliente, max ~90 chars)
+   - header   → bloque superior con título de la app
+   - content  → cuerpo (los templates hijos llenan acá)
+   - footer   → bloque inferior (default: aviso de no responder)
+#}
+<mjml>
+  <mj-head>
+    <mj-title>{% block title %}{{ subject | default('') }}{% endblock %}</mj-title>
+    <mj-preview>{% block preview %}{% endblock %}</mj-preview>
+    <mj-attributes>
+      <mj-all font-family="Helvetica, Arial, sans-serif" />
+      <mj-text color="#202020" font-size="14px" line-height="1.55" />
+      <mj-button background-color="#2563eb" color="#ffffff"
+                 font-weight="600" border-radius="6px" />
+    </mj-attributes>
+    <mj-style>
+      .footer-link { color: #5f6975; text-decoration: none; }
+    </mj-style>
+  </mj-head>
+  <mj-body background-color="#f4f5f7">
+    <mj-section background-color="#ffffff" padding="24px">
+      <mj-column>
+        {% block header %}
+          <mj-text font-size="18px" font-weight="600">
+            {{ app_name | default('Notification') }}
+          </mj-text>
+          <mj-divider border-color="#e5e7eb" border-width="1px" padding="8px 0" />
+        {% endblock %}
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#ffffff" padding="0 24px 24px">
+      <mj-column>
+        {% block content %}{% endblock %}
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#f4f5f7" padding="16px">
+      <mj-column>
+        <mj-text align="center" color="#5f6975" font-size="11px">
+          {% block footer %}
+            Mensaje automático. No respondas a este email.
+          {% endblock %}
+        </mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

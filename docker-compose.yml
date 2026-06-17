@@ -1,0 +1,145 @@
+# Red interna: db/redis/web. Además `web` está en `fvx_suscription_shared` (crear con: docker network create fvx_suscription_shared)
+# para que otros stacks (p. ej. fvx-frontend) resuelvan http://fvx_suscription_backend_web:8080
+#
+# Nombre del proyecto Compose (prefijo real de volúmenes/redes en Docker: «proyecto_clave»).
+# En `.env`: COMPOSE_PROJECT_NAME=fvx_backend (install.sh → <slug>_backend).
+# Claves de volumen/red abajo son CORTAS para evitar «fvx-backend_<slug>_…» duplicado.
+name: ${COMPOSE_PROJECT_NAME:-fvx_suscription_backend}
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: fvx_suscription_backend_db
+    env_file:
+      - .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Postgres NO se publica al host: web/celery lo alcanzan por la red interna
+    # como `db:5432`. Publicarlo (5432:5432) hacía que dos proyectos derivados de
+    # la plantilla colisionaran en el host. Para debug puntual desde el host,
+    # añade temporalmente `ports: ["${DB_PORT:-5432}:5432"]`.
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: fvx_suscription_backend_redis
+    # Redis NO se publica al host (igual que db): se alcanza intra-red como
+    # `redis:6379`. Evita colisión de puerto entre dos proyectos en la misma máquina.
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Celery worker: procesa tasks async (emails, futuros PDFs/OCR/etc) ─
+  # Escucha las queues `default` y `emails`. Cuando crezca el volumen se
+  # pueden escalar por queue independientemente (ver architecture.md §6.6).
+  celery_worker:
+    build: .
+    container_name: fvx_suscription_backend_celery_worker
+    command: celery -A core worker -l info -Q default,emails
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - DJANGO_SETTINGS_MODULE=core.settings
+    networks:
+      - internal
+
+  # ─── Celery beat: scheduler de tasks periódicas (cleanup, etc) ─────────
+  # En prod debe correr en UNA sola instancia (no escalar). DatabaseScheduler
+  # de django-celery-beat permite editar el schedule desde el admin.
+  celery_beat:
+    build: .
+    container_name: fvx_suscription_backend_celery_beat
+    command: celery -A core beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - DJANGO_SETTINGS_MODULE=core.settings
+    networks:
+      - internal
+
+  # ─── Mailpit: SMTP local que captura emails sin enviarlos ──────────────
+  # El backend (NOTIFICATIONS_EMAIL_ADAPTER=smtp) le pega a mailpit:1025.
+  # La web UI vive en http://localhost:8025 — todos los emails capturados
+  # se ven ahí con su HTML renderizado, source, y headers.
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: fvx_suscription_backend_mailpit
+    restart: unless-stopped
+    # SMTP (1025) NO se publica al host: el backend le pega intra-red como
+    # mailpit:1025. La Web UI sí se publica pero parametrizada con MAILPIT_UI_PORT
+    # (default 8025) para que dos proyectos no colisionen en el host.
+    ports:
+      - "${MAILPIT_UI_PORT:-8025}:8025"   # Web UI (http://localhost:${MAILPIT_UI_PORT})
+    environment:
+      MP_MAX_MESSAGES: 5000
+      MP_DATA_FILE: /data/mailpit.db
+    volumes:
+      - mailpit_data:/data
+    networks:
+      - internal
+
+  web:
+    build: .
+    container_name: fvx_suscription_backend_web
+    command: python manage.py runserver 0.0.0.0:8080
+    volumes:
+      - .:/app
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - DJANGO_SETTINGS_MODULE=core.settings
+      # Único contenedor que ejecuta makemigrations / migrate / collectstatic
+      # / createsuperuser en el entrypoint. Los demás (celery_worker, beat)
+      # esperan a que `web` termine. Ver docker-entrypoint.sh para detalles.
+      - RUN_MIGRATIONS=true
+    networks:
+      - internal
+      - fvx_suscription_shared
+
+networks:
+  internal:
+    driver: bridge
+  fvx_suscription_shared:
+    external: true
+    name: fvx_suscription_shared
+
+volumes:
+  postgres_data:
+  static_volume:
+  media_volume:
+  mailpit_data:
