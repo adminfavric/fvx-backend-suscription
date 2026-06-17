@@ -1,8 +1,10 @@
 """Vistas ligadas a autenticación (JWT) con tokens en cookies HttpOnly.
 
-El access y refresh viajan en cookies (set por estas vistas) en vez de en el
-body de la respuesta, eliminando el vector XSS sobre `localStorage`. El body
-de la respuesta solo confirma OK; el cliente no necesita guardar nada.
+El access y refresh viajan en cookies HttpOnly (set por estas vistas) — lo más
+seguro para front + API en el mismo dominio raíz. Además se devuelven en el
+body para soportar SPAs cross-domain (front y API en dominios raíz distintos),
+donde la cookie de terceros queda bloqueada por el navegador y el cliente debe
+guardar el token y mandarlo vía `Authorization: Bearer`.
 """
 
 from django.conf import settings
@@ -44,9 +46,11 @@ class FvxTokenObtainPairView(TokenObtainPairView):
             # Emite la cookie `csrftoken` (legible por JS) para el double-submit
             # CSRF que exige JWTCookieAuthentication en requests mutantes.
             get_token(request)
-            # Body sin tokens — el cliente lee el access desde la cookie
-            # (HttpOnly via JS no; lo lee el browser para mandar al backend).
-            response.data = {"detail": "OK"}
+            # Tokens también en el body: los SPA cross-domain (front en otro
+            # dominio raíz que el API) no pueden usar la cookie HttpOnly de
+            # terceros, así que guardan el token y lo mandan vía
+            # `Authorization: Bearer`. Same-domain sigue usando las cookies.
+            response.data = {"access": access, "refresh": refresh}
         return response
 
 
@@ -80,7 +84,8 @@ class FvxTokenRefreshView(TokenRefreshView):
             refresh = response.data.get("refresh")
             set_auth_cookies(response, access, refresh)
             get_token(request)  # mantener fresca la cookie csrftoken
-            response.data = {"detail": "OK"}
+            # Tokens en el body para clientes SPA cross-domain (ver login).
+            response.data = {"access": access, "refresh": refresh}
         return response
 
 
