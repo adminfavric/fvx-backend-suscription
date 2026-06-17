@@ -612,6 +612,26 @@ class MemberCancelView(APIView):
         return Response(res)
 
 
+def _active_subscription_id(flow, plan_id: str, customer_id: str) -> str | None:
+    """
+    Devuelve el ``subscriptionId`` de una suscripción **activa** (``status == 1``)
+    de este cliente a este plan, o ``None`` si no tiene.
+
+    Sirve de guard anti-duplicado: Flow permite crear varias suscripciones del
+    mismo cliente al mismo plan (cada una cobra por separado), así que antes de
+    crear una nueva verificamos que no exista ya una activa. Ante un error de
+    Flow devolvemos ``None`` (no bloqueamos un alta legítima por un fallo de red).
+    """
+    try:
+        resp = flow.list_subscriptions(plan_id=plan_id, limit=100)
+    except FlowError:
+        return None
+    for sub in resp.get("data", []) or []:
+        if sub.get("customerId") == customer_id and str(sub.get("status")) == "1":
+            return sub.get("subscriptionId")
+    return None
+
+
 class CheckoutStartView(APIView):
     """
     Public checkout step 1: create the Flow customer and start credit-card
@@ -643,6 +663,13 @@ class CheckoutStartView(APIView):
         url_return = f"{settings.PUBLIC_API_BASE_URL}/api/v1/public/checkout/return/"
         try:
             customer_id = self._resolve_customer(flow, name=name, email=email)
+            # Guard anti-duplicado: si ya tiene una suscripción activa a este plan,
+            # no iniciamos otro checkout (evita el cobro doble y da feedback claro).
+            if _active_subscription_id(flow, plan.flow_plan_id, customer_id):
+                return Response(
+                    {"detail": "Ya tienes una suscripción activa a esta membresía."},
+                    status=status.HTTP_409_CONFLICT,
+                )
             reg = flow.register_customer_card(customer_id=customer_id, url_return=url_return)
         except FlowError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
@@ -727,12 +754,22 @@ class CheckoutReturnView(View):
         try:
             reg = flow.get_register_status(token)
             if str(reg.get("status")) == "1":
-                sub = flow.create_subscription(
-                    plan_id=session.plan.flow_plan_id,
-                    customer_id=session.flow_customer_id,
+                # Guard duro anti-cobro-doble: si el cliente YA tiene una
+                # suscripción activa a este plan (p. ej. pasó por el checkout dos
+                # veces), reutilizamos esa en vez de crear otra (que cobraría de
+                # nuevo). Tratamos el resultado como éxito.
+                existing = _active_subscription_id(
+                    flow, session.plan.flow_plan_id, session.flow_customer_id
                 )
+                if existing:
+                    session.subscription_id = existing
+                else:
+                    sub = flow.create_subscription(
+                        plan_id=session.plan.flow_plan_id,
+                        customer_id=session.flow_customer_id,
+                    )
+                    session.subscription_id = sub.get("subscriptionId", "")
                 session.status = CheckoutSession.Status.SUBSCRIBED
-                session.subscription_id = sub.get("subscriptionId", "")
                 session.save(update_fields=["status", "subscription_id", "modified"])
                 result = "ok"
             else:
