@@ -158,7 +158,7 @@ INSERT INTO api_menuitem (
 SELECT
     NOW(),
     NOW(),
-    true,
+    false,
     'MIT-00000001-0001-4001-8001-000000000001',
     'Users',
     'menu-users',
@@ -176,7 +176,7 @@ ON CONFLICT (slug) DO UPDATE SET
     icon = EXCLUDED.icon,
     "order" = EXCLUDED."order",
     allowed_roles = EXCLUDED.allowed_roles,
-    is_active = true,
+    is_active = false,
     section_id = EXCLUDED.section_id,
     modified = NOW();
 
@@ -197,7 +197,7 @@ INSERT INTO api_menuitem (
 SELECT
     NOW(),
     NOW(),
-    true,
+    false,
     'MIT-00000001-0001-4001-8001-000000000002',
     'Groups',
     'menu-groups',
@@ -215,9 +215,47 @@ ON CONFLICT (slug) DO UPDATE SET
     icon = EXCLUDED.icon,
     "order" = EXCLUDED."order",
     allowed_roles = EXCLUDED.allowed_roles,
-    is_active = true,
+    is_active = false,
     section_id = EXCLUDED.section_id,
     modified = NOW();
+
+-- ─── Administration items: Suscripciones / contenido (FVX) ───
+-- Idempotentes (upsert por slug). Rutas SIN /admin: el front antepone /admin
+-- (normalizeNavRoute). Iconos = los del fallback de LayoutComponent.
+INSERT INTO api_menuitem (created, modified, is_active, uuid, name, slug, description, route, icon, "order", allowed_roles, section_id)
+SELECT NOW(), NOW(), true, 'MIT-00000001-0001-4001-8001-000000000005', 'Plans', 'menu-plans', '', '/plans', 'card_membership', 30, '["EDITOR","ADMIN"]'::jsonb, s.id
+FROM api_menusection s WHERE s.slug = 'administration'
+ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, route = EXCLUDED.route, icon = EXCLUDED.icon, "order" = EXCLUDED."order", allowed_roles = EXCLUDED.allowed_roles, is_active = true, section_id = EXCLUDED.section_id, modified = NOW();
+
+INSERT INTO api_menuitem (created, modified, is_active, uuid, name, slug, description, route, icon, "order", allowed_roles, section_id)
+SELECT NOW(), NOW(), true, 'MIT-00000001-0001-4001-8001-000000000006', 'Customers', 'menu-customers', '', '/customers', 'badge', 40, '["EDITOR","ADMIN"]'::jsonb, s.id
+FROM api_menusection s WHERE s.slug = 'administration'
+ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, route = EXCLUDED.route, icon = EXCLUDED.icon, "order" = EXCLUDED."order", allowed_roles = EXCLUDED.allowed_roles, is_active = true, section_id = EXCLUDED.section_id, modified = NOW();
+
+INSERT INTO api_menuitem (created, modified, is_active, uuid, name, slug, description, route, icon, "order", allowed_roles, section_id)
+SELECT NOW(), NOW(), true, 'MIT-00000001-0001-4001-8001-000000000007', 'Subscriptions', 'menu-subscriptions', '', '/subscriptions', 'subscriptions', 50, '["EDITOR","ADMIN"]'::jsonb, s.id
+FROM api_menusection s WHERE s.slug = 'administration'
+ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, route = EXCLUDED.route, icon = EXCLUDED.icon, "order" = EXCLUDED."order", allowed_roles = EXCLUDED.allowed_roles, is_active = true, section_id = EXCLUDED.section_id, modified = NOW();
+
+INSERT INTO api_menuitem (created, modified, is_active, uuid, name, slug, description, route, icon, "order", allowed_roles, section_id)
+SELECT NOW(), NOW(), true, 'MIT-00000001-0001-4001-8001-000000000008', 'Content', 'menu-content', '', '/content', 'video_library', 60, '["EDITOR","ADMIN"]'::jsonb, s.id
+FROM api_menusection s WHERE s.slug = 'administration'
+ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, route = EXCLUDED.route, icon = EXCLUDED.icon, "order" = EXCLUDED."order", allowed_roles = EXCLUDED.allowed_roles, is_active = true, section_id = EXCLUDED.section_id, modified = NOW();
+
+INSERT INTO api_menuitem (created, modified, is_active, uuid, name, slug, description, route, icon, "order", allowed_roles, section_id)
+SELECT NOW(), NOW(), true, 'MIT-00000001-0001-4001-8001-000000000009', 'Programacion', 'menu-programacion', '', '/programacion', 'event_note', 65, '["EDITOR","ADMIN"]'::jsonb, s.id
+FROM api_menusection s WHERE s.slug = 'administration'
+ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, route = EXCLUDED.route, icon = EXCLUDED.icon, "order" = EXCLUDED."order", allowed_roles = EXCLUDED.allowed_roles, is_active = true, section_id = EXCLUDED.section_id, modified = NOW();
+
+INSERT INTO api_menuitem (created, modified, is_active, uuid, name, slug, description, route, icon, "order", allowed_roles, section_id)
+SELECT NOW(), NOW(), true, 'MIT-00000001-0001-4001-8001-00000000000a', 'Events', 'menu-events', '', '/events', 'celebration', 70, '["EDITOR","ADMIN"]'::jsonb, s.id
+FROM api_menusection s WHERE s.slug = 'administration'
+ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, route = EXCLUDED.route, icon = EXCLUDED.icon, "order" = EXCLUDED."order", allowed_roles = EXCLUDED.allowed_roles, is_active = true, section_id = EXCLUDED.section_id, modified = NOW();
+
+INSERT INTO api_menuitem (created, modified, is_active, uuid, name, slug, description, route, icon, "order", allowed_roles, section_id)
+SELECT NOW(), NOW(), true, 'MIT-00000001-0001-4001-8001-00000000000b', 'Messages', 'menu-messages', '', '/messages', 'mail', 80, '["EDITOR","ADMIN"]'::jsonb, s.id
+FROM api_menusection s WHERE s.slug = 'administration'
+ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, route = EXCLUDED.route, icon = EXCLUDED.icon, "order" = EXCLUDED."order", allowed_roles = EXCLUDED.allowed_roles, is_active = true, section_id = EXCLUDED.section_id, modified = NOW();
 
 -- ─── Section: Dev (sample feature gallery) ───
 INSERT INTO api_menusection (
