@@ -112,8 +112,9 @@ class LeadSerializer(serializers.ModelSerializer):
         fields = [
             "id", "kind", "source", "name", "email", "phone",
             "country", "subject", "message", "fullName", "created",
+            "is_read", "is_replied",
         ]
-        read_only_fields = ["id", "created"]
+        read_only_fields = ["id", "created", "is_read", "is_replied"]
 
     def create(self, validated_data):
         full_name = validated_data.pop("fullName", "")

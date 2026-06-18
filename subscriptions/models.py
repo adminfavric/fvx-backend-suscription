@@ -340,6 +340,9 @@ class Lead(TimeStampedModel):
     subject = models.CharField(_("subject"), max_length=255, blank=True)
     message = models.TextField(_("message"), blank=True)
     raw = models.JSONField(_("raw payload"), default=dict, blank=True)
+    # Gestión en el panel: marcar como leído / respondido (no afecta al sitio).
+    is_read = models.BooleanField(_("read"), default=False)
+    is_replied = models.BooleanField(_("replied"), default=False)
 
     class Meta:
         verbose_name = _("lead")

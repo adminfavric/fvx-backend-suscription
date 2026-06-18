@@ -418,9 +418,22 @@ class LeadViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = LeadSerializer
     permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ["kind", "source"]
+    filterset_fields = ["kind", "source", "is_read", "is_replied"]
     search_fields = ["name", "email", "subject", "message"]
     ordering_fields = ["created", "kind"]
+
+    @action(detail=True, methods=["patch"])
+    def mark(self, request, pk=None):
+        """Marca el mensaje como leído / respondido. Body: ``{is_read?, is_replied?}``."""
+        lead = self.get_object()
+        changed = []
+        for field in ("is_read", "is_replied"):
+            if field in request.data:
+                setattr(lead, field, bool(request.data[field]))
+                changed.append(field)
+        if changed:
+            lead.save(update_fields=[*changed, "modified"])
+        return Response(self.get_serializer(lead).data)
 
 
 # ── Área de miembros (login sin contraseña + contenido por suscripción) ──────
