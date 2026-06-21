@@ -46,6 +46,8 @@ ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS", default=["*"])
 _DEV_TRUSTED_ORIGINS = [
     "http://localhost:4200",
     "http://127.0.0.1:4200",
+    "http://localhost:4201",
+    "http://127.0.0.1:4201",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:8080",
@@ -450,6 +452,7 @@ CORS_ALLOWED_ORIGINS = env.list(
     "CORS_ALLOWED_ORIGINS",
     default=[
         "http://localhost:4200",
+        "http://localhost:4201",
         "http://localhost:3000",
     ],
 )
