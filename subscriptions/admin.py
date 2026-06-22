@@ -3,8 +3,14 @@
 from django.contrib import admin, messages
 from django.utils.translation import gettext_lazy as _
 
-from .models import ContentItem, ContentSchedule, Event, EventOrder, Lead, Plan
-from .services import FlowError, import_plans_from_flow, sync_plan_to_flow
+from .models import CheckoutSession, ContentItem, ContentSchedule, Event, EventOrder, Lead, Plan
+from .services import (
+    FlowError,
+    PayPalError,
+    import_plans_from_flow,
+    sync_plan_to_flow,
+    sync_plan_to_paypal,
+)
 
 
 @admin.register(Plan)
@@ -18,12 +24,13 @@ class PlanAdmin(admin.ModelAdmin):
         "featured",
         "is_active",
         "synced",
+        "paypal",
         "modified",
     ]
-    list_filter = ["is_active", "is_public", "featured", "interval"]
-    search_fields = ["name", "slug", "flow_plan_id", "uuid"]
+    list_filter = ["is_active", "is_public", "featured", "interval", "paypal_enabled"]
+    search_fields = ["name", "slug", "flow_plan_id", "paypal_plan_id", "uuid"]
     ordering = ["order", "name"]
-    actions = ["action_sync_to_flow", "action_import_from_flow"]
+    actions = ["action_sync_to_flow", "action_sync_to_paypal", "action_import_from_flow"]
 
     fieldsets = (
         (_("Membership (public site)"), {
@@ -35,6 +42,15 @@ class PlanAdmin(admin.ModelAdmin):
                        "trial_period_days", "days_until_due", "periods_number",
                        "charges_retries_number"),
         }),
+        (_("PayPal (international, USD)"), {
+            "fields": ("paypal_enabled", "paypal_amount", "paypal_currency",
+                       "paypal_plan_id", "paypal_product_id", "paypal_synced_at",
+                       "paypal_status", "paypal_last_sync_error"),
+            "description": _(
+                "PayPal es la alternativa internacional (USD). Si dejas el monto USD "
+                "vacío, se convierte desde el precio CLP con PAYPAL_CLP_PER_USD."
+            ),
+        }),
         (_("Flow sync (read-only)"), {
             "fields": ("flow_plan_id", "flow_synced_at", "flow_status",
                        "last_sync_error", "slug", "uuid", "created", "modified"),
@@ -42,12 +58,17 @@ class PlanAdmin(admin.ModelAdmin):
     )
     readonly_fields = [
         "flow_plan_id", "flow_synced_at", "flow_status", "last_sync_error",
-        "slug", "uuid", "created", "modified",
+        "paypal_plan_id", "paypal_product_id", "paypal_synced_at", "paypal_status",
+        "paypal_last_sync_error", "slug", "uuid", "created", "modified",
     ]
 
     @admin.display(description=_("Flow"), boolean=True)
     def synced(self, obj: Plan) -> bool:
         return obj.is_synced
+
+    @admin.display(description=_("PayPal"), boolean=True)
+    def paypal(self, obj: Plan) -> bool:
+        return bool(obj.paypal_plan_id and obj.paypal_enabled)
 
     def save_model(self, request, obj: Plan, form, change):
         super().save_model(request, obj, form, change)
@@ -68,6 +89,17 @@ class PlanAdmin(admin.ModelAdmin):
                 _("Saved locally, but Flow sync failed: %s") % exc,
                 level=messages.WARNING,
             )
+        # PayPal solo si el plan lo habilita.
+        if obj.paypal_enabled:
+            try:
+                sync_plan_to_paypal(obj)
+                self.message_user(request, _("Plan synced to PayPal."), level=messages.SUCCESS)
+            except PayPalError as exc:
+                self.message_user(
+                    request,
+                    _("Saved locally, but PayPal sync failed: %s") % exc,
+                    level=messages.WARNING,
+                )
 
     @admin.action(description=_("Sync selected plans to Flow"))
     def action_sync_to_flow(self, request, queryset):
@@ -82,6 +114,18 @@ class PlanAdmin(admin.ModelAdmin):
         if ok:
             self.message_user(request, _("%d plan(s) synced to Flow.") % ok, level=messages.SUCCESS)
 
+    @admin.action(description=_("Sync selected plans to PayPal"))
+    def action_sync_to_paypal(self, request, queryset):
+        ok = 0
+        for plan in queryset:
+            try:
+                sync_plan_to_paypal(plan)
+                ok += 1
+            except PayPalError as exc:
+                self.message_user(request, f"{plan.name}: {exc}", level=messages.WARNING)
+        if ok:
+            self.message_user(request, _("%d plan(s) synced to PayPal.") % ok, level=messages.SUCCESS)
+
     @admin.action(description=_("Import plans from Flow"))
     def action_import_from_flow(self, request, queryset):
         # Imports the whole Flow catalogue (the selection is ignored).
@@ -95,6 +139,17 @@ class PlanAdmin(admin.ModelAdmin):
             _("Imported %(created)d, updated %(updated)d plan(s) from Flow.") % result,
             level=messages.SUCCESS,
         )
+
+
+@admin.register(CheckoutSession)
+class CheckoutSessionAdmin(admin.ModelAdmin):
+    """Suscripciones públicas. ``provider`` distingue Flow (CLP) de PayPal (USD)."""
+
+    list_display = ["email", "provider", "plan", "status", "subscription_id", "created"]
+    list_filter = ["provider", "status", "plan"]
+    search_fields = ["email", "name", "subscription_id", "flow_customer_id", "register_token"]
+    ordering = ["-created"]
+    readonly_fields = [f.name for f in CheckoutSession._meta.fields]
 
 
 @admin.register(ContentItem)

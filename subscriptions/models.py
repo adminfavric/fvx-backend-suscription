@@ -15,6 +15,9 @@ See ``subscriptions/services/flow.py`` for the API client and
 
 from __future__ import annotations
 
+from decimal import ROUND_HALF_UP, Decimal
+
+from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.utils import timezone
@@ -31,6 +34,23 @@ class PlanInterval(models.IntegerChoices):
     WEEKLY = 2, _("Weekly")
     MONTHLY = 3, _("Monthly")
     YEARLY = 4, _("Yearly")
+
+
+class PaymentProvider(models.TextChoices):
+    """Pasarela de pago que respalda una suscripción. Diferencia las
+    suscripciones de Flow (CLP, principal) de las de PayPal (USD, internacional)."""
+
+    FLOW = "flow", _("Flow")
+    PAYPAL = "paypal", _("PayPal")
+
+
+# PayPal billing-cycle ``interval_unit`` por cada ``PlanInterval`` de Flow.
+PAYPAL_INTERVAL_UNIT = {
+    PlanInterval.DAILY: "DAY",
+    PlanInterval.WEEKLY: "WEEK",
+    PlanInterval.MONTHLY: "MONTH",
+    PlanInterval.YEARLY: "YEAR",
+}
 
 
 class Plan(BaseModelGeneric, TimeStampedModel):
@@ -139,6 +159,39 @@ class Plan(BaseModelGeneric, TimeStampedModel):
     )
     last_sync_error = models.TextField(_("last sync error"), blank=True)
 
+    # ── PayPal (alternativa internacional en USD) ─────────────────────────
+    paypal_enabled = models.BooleanField(
+        _("PayPal enabled"),
+        default=True,
+        help_text=_("Ofrecer PayPal (USD) como alternativa internacional en este plan."),
+    )
+    paypal_amount = models.DecimalField(
+        _("PayPal amount (USD)"),
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_(
+            "Precio en USD a cobrar por PayPal. Vacío = se convierte automáticamente "
+            "desde el precio CLP usando PAYPAL_CLP_PER_USD."
+        ),
+    )
+    paypal_currency = models.CharField(_("PayPal currency"), max_length=3, default="USD")
+    paypal_product_id = models.CharField(
+        _("PayPal product id"), max_length=120, blank=True,
+        help_text=_("Producto de catálogo en PayPal (creado en el primer sync)."),
+    )
+    paypal_plan_id = models.CharField(
+        _("PayPal plan id"), max_length=120, blank=True,
+        help_text=_("Billing plan en PayPal (P-…). Creado en el primer sync."),
+    )
+    paypal_synced_at = models.DateTimeField(_("last synced to PayPal"), null=True, blank=True)
+    paypal_status = models.CharField(
+        _("PayPal status"), max_length=20, blank=True,
+        help_text=_("Estado del billing plan en PayPal: ACTIVE / INACTIVE."),
+    )
+    paypal_last_sync_error = models.TextField(_("PayPal last sync error"), blank=True)
+
     class Meta:
         verbose_name = _("plan")
         verbose_name_plural = _("plans")
@@ -156,6 +209,32 @@ class Plan(BaseModelGeneric, TimeStampedModel):
         """Has a price and is live in Flow."""
         return bool(self.amount) and self.is_synced and self.is_active
 
+    @property
+    def paypal_price_usd(self) -> Decimal | None:
+        """
+        Precio efectivo en USD para PayPal: el override ``paypal_amount`` si está
+        definido; si no, el precio CLP convertido con ``PAYPAL_CLP_PER_USD``.
+        ``None`` si el plan no tiene precio CLP (draft).
+        """
+        if self.paypal_amount is not None:
+            return self.paypal_amount
+        if not self.amount:
+            return None
+        rate = getattr(settings, "PAYPAL_CLP_PER_USD", 950) or 950
+        return (Decimal(self.amount) / Decimal(rate)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+
+    @property
+    def is_paypal_purchasable(self) -> bool:
+        """Ofrecible por PayPal: habilitado, sincronizado y con precio USD."""
+        return (
+            self.paypal_enabled
+            and bool(self.paypal_plan_id)
+            and self.is_active
+            and self.paypal_price_usd is not None
+        )
+
     def save(self, *args, **kwargs):
         # BaseModelGeneric.save() assigns the slug from name on first save.
         super().save(*args, **kwargs)
@@ -167,9 +246,11 @@ class Plan(BaseModelGeneric, TimeStampedModel):
 
 class CheckoutSession(TimeStampedModel):
     """
-    Tracks one public subscription attempt across the Flow card-registration
-    redirect. Created on checkout start (after ``customer/register``); completed
-    when Flow returns and we create the subscription.
+    Rastrea un intento de suscripción pública a través del redirect de la pasarela.
+    ``provider`` distingue Flow (registro de tarjeta → ``subscription/create``) de
+    PayPal (aprobación de la suscripción → ``billing/subscriptions``). Los campos
+    ``flow_*`` solo aplican a Flow; en PayPal quedan vacíos y el id de la
+    suscripción de PayPal (``I-…``) se guarda igualmente en ``subscription_id``.
     """
 
     class Status(models.TextChoices):
@@ -177,15 +258,27 @@ class CheckoutSession(TimeStampedModel):
         SUBSCRIBED = "subscribed", _("Subscribed")
         FAILED = "failed", _("Failed")
 
+    provider = models.CharField(
+        _("provider"),
+        max_length=20,
+        choices=PaymentProvider.choices,
+        default=PaymentProvider.FLOW,
+        db_index=True,
+        help_text=_("Pasarela que respalda esta suscripción (Flow o PayPal)."),
+    )
     plan = models.ForeignKey("Plan", on_delete=models.PROTECT, related_name="checkout_sessions")
     name = models.CharField(_("name"), max_length=255)
     email = models.EmailField(_("email"))
-    flow_customer_id = models.CharField(_("Flow customer id"), max_length=120)
-    register_token = models.CharField(_("Flow register token"), max_length=120, unique=True)
+    # Solo Flow: cliente y token de registro de tarjeta.
+    flow_customer_id = models.CharField(_("Flow customer id"), max_length=120, blank=True)
+    register_token = models.CharField(
+        _("Flow register token"), max_length=120, unique=True, null=True, blank=True
+    )
     status = models.CharField(
         _("status"), max_length=20, choices=Status.choices, default=Status.PENDING_CARD
     )
-    subscription_id = models.CharField(_("Flow subscription id"), max_length=120, blank=True)
+    # Id de la suscripción en la pasarela (Flow ``subscriptionId`` o PayPal ``I-…``).
+    subscription_id = models.CharField(_("subscription id"), max_length=120, blank=True)
     error = models.TextField(_("error"), blank=True)
 
     class Meta:
@@ -194,7 +287,7 @@ class CheckoutSession(TimeStampedModel):
         ordering = ["-created"]
 
     def __str__(self) -> str:
-        return f"{self.email} → {self.plan_id} ({self.status})"
+        return f"[{self.provider}] {self.email} → {self.plan_id} ({self.status})"
 
 
 class ContentItem(TimeStampedModel):

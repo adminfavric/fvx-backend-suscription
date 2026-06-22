@@ -316,6 +316,24 @@ FLOW_SECRET_KEY = env("FLOW_SECRET_KEY", default="")
 FLOW_SANDBOX = env.bool("FLOW_SANDBOX", default=True)
 FLOW_API_BASE = env("FLOW_API_BASE", default="")
 
+# ─── PayPal (suscripciones internacionales en USD) ───────────────────────────
+# Flow es la pasarela principal (tarjetas chilenas, CLP). PayPal se ofrece como
+# ALTERNATIVA INTERNACIONAL (clientes de Argentina, etc.) y cobra en USD, ya que
+# PayPal no soporta CLP. El precio USD se deriva del precio CLP del plan dividido
+# por PAYPAL_CLP_PER_USD (tipo de cambio configurable), salvo que el plan defina
+# un precio USD propio. Credenciales desde developer.paypal.com → Apps & Creds.
+# PAYPAL_SANDBOX=True usa api-m.sandbox.paypal.com; False = api-m.paypal.com.
+PAYPAL_CLIENT_ID = env("PAYPAL_CLIENT_ID", default="")
+PAYPAL_SECRET = env("PAYPAL_SECRET", default="")
+PAYPAL_SANDBOX = env.bool("PAYPAL_SANDBOX", default=True)
+PAYPAL_API_BASE = env("PAYPAL_API_BASE", default="")
+# Webhook id (panel de PayPal) para verificar la firma de las notificaciones.
+PAYPAL_WEBHOOK_ID = env("PAYPAL_WEBHOOK_ID", default="")
+# Pesos chilenos por 1 USD usado para convertir el precio del plan a USD.
+PAYPAL_CLP_PER_USD = env.int("PAYPAL_CLP_PER_USD", default=950)
+# Nombre de marca mostrado en la pantalla de aprobación de PayPal.
+PAYPAL_BRAND_NAME = env("PAYPAL_BRAND_NAME", default="Lita Donoso")
+
 # Public base URLs used to build Flow redirect/return URLs.
 # PUBLIC_API_BASE_URL: where Flow sends the customer back (this backend, browser-
 # reachable). FRONTEND_BASE_URL: where we then redirect to show the result.

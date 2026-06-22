@@ -23,6 +23,10 @@ from .views import (
     MemberContentView,
     MemberRequestCodeView,
     MemberVerifyCodeView,
+    PaypalCheckoutReturnView,
+    PaypalCheckoutStartView,
+    PaypalSubscriptionRecordView,
+    PaypalWebhookView,
     PlanViewSet,
     PublicLeadCreateView,
     PublicMembershipListView,
@@ -49,6 +53,11 @@ urlpatterns = [
     path("public/leads/", PublicLeadCreateView.as_view(), name="public-leads"),
     path("public/checkout/start/", CheckoutStartView.as_view(), name="checkout-start"),
     path("public/checkout/return/", CheckoutReturnView.as_view(), name="checkout-return"),
+    # Checkout PayPal (alternativa internacional en USD)
+    path("public/paypal/checkout/start/", PaypalCheckoutStartView.as_view(), name="paypal-checkout-start"),
+    path("public/paypal/checkout/return/", PaypalCheckoutReturnView.as_view(), name="paypal-checkout-return"),
+    path("public/paypal/subscription/record/", PaypalSubscriptionRecordView.as_view(), name="paypal-subscription-record"),
+    path("public/paypal/webhook/", PaypalWebhookView.as_view(), name="paypal-webhook"),
     # Área de miembros (login sin contraseña + contenido)
     path("public/member/request-code/", MemberRequestCodeView.as_view(), name="member-request-code"),
     path("public/member/verify-code/", MemberVerifyCodeView.as_view(), name="member-verify-code"),

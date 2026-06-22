@@ -6,6 +6,9 @@ from .models import ContentItem, ContentSchedule, Event, Lead, Plan
 
 
 class PlanSerializer(serializers.ModelSerializer):
+    # Precio USD efectivo (override o conversión desde CLP) — solo lectura.
+    paypal_price_usd = serializers.SerializerMethodField()
+
     class Meta:
         model = Plan
         fields = [
@@ -16,27 +19,49 @@ class PlanSerializer(serializers.ModelSerializer):
             "tagline", "description", "cadence", "recorded", "features",
             "icon", "image_url", "featured", "is_public", "order", "is_active",
             "flow_synced_at", "flow_status", "last_sync_error",
+            # PayPal (alternativa internacional en USD)
+            "paypal_enabled", "paypal_amount", "paypal_currency", "paypal_price_usd",
+            "paypal_plan_id", "paypal_product_id", "paypal_synced_at",
+            "paypal_status", "paypal_last_sync_error",
             "created", "modified",
         ]
         read_only_fields = [
             "uuid", "slug", "flow_plan_id", "flow_synced_at", "flow_status",
-            "last_sync_error", "created", "modified",
+            "last_sync_error", "paypal_price_usd", "paypal_plan_id", "paypal_product_id",
+            "paypal_synced_at", "paypal_status", "paypal_last_sync_error",
+            "created", "modified",
         ]
+
+    def get_paypal_price_usd(self, obj: Plan):
+        price = obj.paypal_price_usd
+        return float(price) if price is not None else None
 
 
 class PublicMembershipSerializer(serializers.ModelSerializer):
     """Shape consumed by the public membership cards (matches the frontend
-    ``Membership`` interface). ``priceMonthly`` is null → 'Valor por confirmar'."""
+    ``Membership`` interface). ``priceMonthly`` is null → 'Valor por confirmar'.
+    ``paypalEnabled`` / ``priceUsd`` permiten al frontend ofrecer el botón de
+    PayPal (alternativa internacional) y mostrar el precio aproximado en USD."""
 
     priceMonthly = serializers.IntegerField(source="amount", allow_null=True)
+    paypalEnabled = serializers.SerializerMethodField()
+    paypalPlanId = serializers.CharField(source="paypal_plan_id")
+    priceUsd = serializers.SerializerMethodField()
 
     class Meta:
         model = Plan
         fields = [
             "slug", "name", "tagline", "description", "cadence",
             "recorded", "features", "priceMonthly", "icon", "featured",
-            "image_url", "interval",
+            "image_url", "interval", "paypalEnabled", "paypalPlanId", "priceUsd",
         ]
+
+    def get_paypalEnabled(self, obj: Plan) -> bool:
+        return obj.is_paypal_purchasable
+
+    def get_priceUsd(self, obj: Plan):
+        price = obj.paypal_price_usd
+        return float(price) if price is not None else None
 
 
 class EventSerializer(serializers.ModelSerializer):

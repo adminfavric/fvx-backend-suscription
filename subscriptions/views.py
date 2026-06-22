@@ -26,7 +26,16 @@ from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 
-from .models import CheckoutSession, ContentItem, ContentSchedule, Event, EventOrder, Lead, Plan
+from .models import (
+    CheckoutSession,
+    ContentItem,
+    ContentSchedule,
+    Event,
+    EventOrder,
+    Lead,
+    PaymentProvider,
+    Plan,
+)
 from .serializers import (
     ContentItemSerializer,
     ContentScheduleSerializer,
@@ -37,7 +46,15 @@ from .serializers import (
     PublicEventSerializer,
     PublicMembershipSerializer,
 )
-from .services import FlowError, get_flow_client, import_plans_from_flow, sync_plan_to_flow
+from .services import (
+    FlowError,
+    PayPalError,
+    get_flow_client,
+    get_paypal_client,
+    import_plans_from_flow,
+    sync_plan_to_flow,
+    sync_plan_to_paypal,
+)
 from .services import member_auth
 
 
@@ -93,13 +110,20 @@ class PlanViewSet(viewsets.ModelViewSet):
         return Response(result)
 
     def _sync(self, plan: Plan) -> None:
-        """Best-effort push to Flow; the error (if any) is stored on the plan."""
+        """Best-effort push a las pasarelas; el error (si lo hay) queda en el plan.
+        Flow se sincroniza siempre que haya precio CLP; PayPal solo si el plan lo
+        tiene habilitado (``paypal_enabled``)."""
         if not plan.amount:
             return
         try:
             sync_plan_to_flow(plan)
         except FlowError:
             pass  # error already persisted to plan.last_sync_error
+        if plan.paypal_enabled:
+            try:
+                sync_plan_to_paypal(plan)
+            except PayPalError:
+                pass  # error already persisted to plan.paypal_last_sync_error
 
 
 def _flow_list_params(request):
@@ -403,6 +427,262 @@ class FlowSubscriptionReactivateView(APIView):
         return Response(res)
 
 
+# ── Checkout PayPal (alternativa internacional en USD) ───────────────────────
+class PaypalCheckoutStartView(APIView):
+    """
+    Checkout PayPal paso 1: crea la suscripción en PayPal (estado
+    ``APPROVAL_PENDING``) y devuelve la URL de aprobación a la que redirigir al
+    cliente. Es el equivalente internacional de ``CheckoutStartView`` (Flow): en
+    vez de registrar una tarjeta chilena, el cliente aprueba la suscripción en su
+    cuenta PayPal y se le cobra en USD.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        data = request.data
+        slug = (data.get("plan_slug") or "").strip()
+        name = (data.get("name") or "").strip()
+        email = (data.get("email") or "").strip()
+        if not (slug and name and email):
+            return Response({"detail": "plan_slug, name and email are required."}, status=400)
+
+        plan = Plan.objects.filter(slug=slug, is_active=True).first()
+        if not plan:
+            return Response({"detail": "Plan not found."}, status=404)
+        if not plan.is_paypal_purchasable:
+            return Response(
+                {"detail": "Este plan no está disponible por PayPal todavía."},
+                status=409,
+            )
+
+        # Guard anti-duplicado: si ya tiene una suscripción PayPal activa a este
+        # plan, no iniciamos otra (evita el cobro doble).
+        if self._has_active_paypal_sub(plan, email):
+            return Response(
+                {"detail": "Ya tienes una suscripción activa a esta membresía."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        first, _, last = name.partition(" ")
+        pp = get_paypal_client()
+        return_base = settings.PUBLIC_API_BASE_URL
+        try:
+            sub = pp.create_subscription(
+                plan_id=plan.paypal_plan_id,
+                subscriber={
+                    "name": {"given_name": first or name, "surname": last or ""},
+                    "email_address": email,
+                },
+                application_context={
+                    "brand_name": getattr(settings, "PAYPAL_BRAND_NAME", "Lita Donoso"),
+                    "user_action": "SUBSCRIBE_NOW",
+                    "shipping_preference": "NO_SHIPPING",
+                    "return_url": f"{return_base}/api/v1/public/paypal/checkout/return/",
+                    "cancel_url": f"{return_base}/api/v1/public/paypal/checkout/return/?cancel=1",
+                },
+            )
+        except PayPalError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        approval = pp.approval_url(sub)
+        if not approval:
+            return Response({"detail": "PayPal no devolvió la URL de aprobación."}, status=502)
+
+        CheckoutSession.objects.create(
+            provider=PaymentProvider.PAYPAL,
+            plan=plan,
+            name=name,
+            email=email,
+            subscription_id=sub.get("id", ""),
+            status=CheckoutSession.Status.PENDING_CARD,
+        )
+        return Response({"redirect_url": approval})
+
+    @staticmethod
+    def _has_active_paypal_sub(plan: Plan, email: str) -> bool:
+        """True si el email ya tiene una suscripción PayPal ACTIVE a este plan."""
+        pp = get_paypal_client()
+        sessions = CheckoutSession.objects.filter(
+            provider=PaymentProvider.PAYPAL,
+            plan=plan,
+            email__iexact=email,
+            status=CheckoutSession.Status.SUBSCRIBED,
+        ).exclude(subscription_id="")
+        for cs in sessions:
+            try:
+                sub = pp.get_subscription(cs.subscription_id)
+                if sub.get("status") == "ACTIVE":
+                    return True
+            except PayPalError:
+                continue
+        return False
+
+
+class PaypalSubscriptionRecordView(APIView):
+    """
+    Registra una suscripción de PayPal creada en el navegador por el botón del SDK
+    (``paypal.Buttons`` con ``createSubscription`` → ``onApprove``). El front envía
+    ``{plan_slug, name, email, subscription_id}`` con el ``subscriptionID`` que
+    devuelve PayPal. Sin esto, PayPal cobraría pero la app no se enteraría (el
+    miembro no tendría acceso ni se podría diferenciar/cancelar la suscripción).
+
+    Si hay credenciales de PayPal (secret) verifica el estado real contra la API;
+    si no, confía en el cliente (sandbox) y la marca como suscrita.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        data = request.data
+        slug = (data.get("plan_slug") or "").strip()
+        name = (data.get("name") or "").strip()
+        email = (data.get("email") or "").strip()
+        sub_id = (data.get("subscription_id") or "").strip()
+        if not (slug and name and email and sub_id):
+            return Response(
+                {"detail": "plan_slug, name, email y subscription_id son requeridos."},
+                status=400,
+            )
+
+        plan = Plan.objects.filter(slug=slug, is_active=True).first()
+        if not plan:
+            return Response({"detail": "Plan not found."}, status=404)
+
+        # Idempotencia: si ya registramos esta suscripción, no la duplicamos.
+        existing = CheckoutSession.objects.filter(
+            provider=PaymentProvider.PAYPAL, subscription_id=sub_id
+        ).first()
+        if existing:
+            return Response({"detail": "ok", "already": True})
+
+        # Verificación en vivo si hay secret configurado (mejor garantía). Sin
+        # secret (sandbox sin backend creds) confiamos en el SDK del cliente.
+        status_ok = True
+        if getattr(settings, "PAYPAL_SECRET", ""):
+            try:
+                sub = get_paypal_client().get_subscription(sub_id)
+                status_ok = sub.get("status") in ("ACTIVE", "APPROVED")
+            except PayPalError:
+                status_ok = True  # no bloquear por fallo puntual de la API
+
+        CheckoutSession.objects.create(
+            provider=PaymentProvider.PAYPAL,
+            plan=plan,
+            name=name,
+            email=email,
+            subscription_id=sub_id,
+            status=(
+                CheckoutSession.Status.SUBSCRIBED
+                if status_ok
+                else CheckoutSession.Status.FAILED
+            ),
+        )
+        return Response({"detail": "ok", "subscribed": status_ok})
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class PaypalCheckoutReturnView(View):
+    """
+    Checkout PayPal paso 2: PayPal redirige al cliente aquí tras aprobar (o
+    cancelar) la suscripción. Confirmamos el estado real consultando PayPal y
+    redirigimos al frontend con el resultado.
+    """
+
+    def get(self, request):
+        return self._handle(request)
+
+    def post(self, request):
+        return self._handle(request)
+
+    def _handle(self, request):
+        # PayPal devuelve ?subscription_id=I-...&token=...&ba_token=...
+        sub_id = request.GET.get("subscription_id") or request.POST.get("subscription_id")
+        cancelled = request.GET.get("cancel") == "1"
+        session = (
+            CheckoutSession.objects.filter(
+                provider=PaymentProvider.PAYPAL, subscription_id=sub_id
+            ).first()
+            if sub_id
+            else None
+        )
+        if not session:
+            return JsonResponse({"detail": "Unknown PayPal subscription."}, status=400)
+
+        result = "fail"
+        if not cancelled:
+            try:
+                sub = get_paypal_client().get_subscription(sub_id)
+                if sub.get("status") in ("ACTIVE", "APPROVED"):
+                    session.status = CheckoutSession.Status.SUBSCRIBED
+                    session.save(update_fields=["status", "modified"])
+                    result = "ok"
+                else:
+                    session.status = CheckoutSession.Status.FAILED
+                    session.save(update_fields=["status", "modified"])
+            except PayPalError as exc:
+                session.error = str(exc)
+                session.status = CheckoutSession.Status.FAILED
+                session.save(update_fields=["status", "error", "modified"])
+        else:
+            session.status = CheckoutSession.Status.FAILED
+            session.save(update_fields=["status", "modified"])
+
+        return HttpResponseRedirect(
+            f"{settings.FRONTEND_BASE_URL}/membresias/{session.plan.slug}?checkout={result}"
+        )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class PaypalWebhookView(View):
+    """
+    Webhook server-to-server de PayPal. Mantiene el estado local en sync cuando la
+    suscripción cambia fuera del flujo de checkout (activación, cancelación, pago
+    fallido). Verifica la firma si ``PAYPAL_WEBHOOK_ID`` está configurado.
+    """
+
+    def post(self, request):
+        body = request.body.decode("utf-8") or "{}"
+        webhook_id = getattr(settings, "PAYPAL_WEBHOOK_ID", "")
+        if webhook_id:
+            try:
+                ok = get_paypal_client().verify_webhook(
+                    headers=dict(request.headers), body=body, webhook_id=webhook_id
+                )
+            except PayPalError:
+                ok = False
+            if not ok:
+                return JsonResponse({"detail": "invalid signature"}, status=400)
+
+        import json
+
+        try:
+            event = json.loads(body)
+        except ValueError:
+            return JsonResponse({"ok": True})
+
+        event_type = event.get("event_type", "")
+        resource = event.get("resource", {}) or {}
+        sub_id = resource.get("id")
+        if sub_id and event_type.startswith("BILLING.SUBSCRIPTION."):
+            session = CheckoutSession.objects.filter(
+                provider=PaymentProvider.PAYPAL, subscription_id=sub_id
+            ).first()
+            if session:
+                if event_type == "BILLING.SUBSCRIPTION.ACTIVATED":
+                    session.status = CheckoutSession.Status.SUBSCRIBED
+                elif event_type in (
+                    "BILLING.SUBSCRIPTION.CANCELLED",
+                    "BILLING.SUBSCRIPTION.EXPIRED",
+                    "BILLING.SUBSCRIPTION.SUSPENDED",
+                ):
+                    session.status = CheckoutSession.Status.FAILED
+                session.save(update_fields=["status", "modified"])
+        return JsonResponse({"ok": True})
+
+
 class PublicLeadCreateView(generics.CreateAPIView):
     """Captura pública de leads (newsletter / contacto / maratón). Sin auth."""
 
@@ -521,13 +801,12 @@ class MemberContentView(APIView):
 
     def _active_plan_ids(self, email: str) -> list[int]:
         """
-        Planes con suscripción ACTIVA del miembro, verificada EN VIVO contra Flow
-        (Flow es la fuente de verdad). Recorre las ``CheckoutSession`` suscritas
-        de ese email y consulta el estado real de cada suscripción en Flow
-        (``status == 1`` = activa). Si Flow no responde, cae al registro local
-        para no bloquear a un miembro al día por una caída puntual de Flow.
+        Planes con suscripción ACTIVA del miembro, verificada EN VIVO contra la
+        pasarela correspondiente (Flow o PayPal según ``cs.provider``). Recorre las
+        ``CheckoutSession`` suscritas de ese email y consulta el estado real de
+        cada suscripción. Si la pasarela no responde, cae al registro local para no
+        bloquear a un miembro al día por una caída puntual.
         """
-        flow = get_flow_client()
         active: set[int] = set()
         sessions = CheckoutSession.objects.filter(
             email__iexact=email, status=CheckoutSession.Status.SUBSCRIBED
@@ -536,19 +815,15 @@ class MemberContentView(APIView):
             if not cs.subscription_id:
                 active.add(cs.plan_id)
                 continue
-            try:
-                sub = flow.get_subscription(cs.subscription_id)
-                if str(sub.get("status")) == "1":
-                    active.add(cs.plan_id)
-                # status != 1 → cancelada/inactiva → NO se agrega (sin acceso)
-            except FlowError:
-                active.add(cs.plan_id)  # fallback: no bloquear por caída de Flow
+            if _subscription_is_active(cs):
+                active.add(cs.plan_id)
+            # inactiva/cancelada → NO se agrega (sin acceso)
         return list(active)
 
 
 class MemberAccountView(APIView):
-    """GET (Bearer) → suscripciones del miembro con estado real (Flow) + método
-    de pago (tarjeta). Base de la sección 'Mi suscripción'."""
+    """GET (Bearer) → suscripciones del miembro con estado real (Flow o PayPal
+    según ``provider``) + método de pago. Base de la sección 'Mi suscripción'."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -557,7 +832,6 @@ class MemberAccountView(APIView):
         email = _member_email(request)
         if not email:
             return Response({"detail": "No autenticado."}, status=401)
-        flow = get_flow_client()
         subs, seen = [], set()
         sessions = (
             CheckoutSession.objects.filter(
@@ -573,9 +847,11 @@ class MemberAccountView(APIView):
             seen.add(cs.subscription_id)
             info = {
                 "subscription_id": cs.subscription_id,
+                "provider": cs.provider,
                 "plan_name": cs.plan.name,
                 "plan_slug": cs.plan.slug,
                 "amount": cs.plan.amount,
+                "currency": cs.plan.currency,
                 "interval": cs.plan.interval,
                 "status": None,
                 "period_end": None,
@@ -583,29 +859,47 @@ class MemberAccountView(APIView):
                 "cancel_at_period_end": None,
                 "card": None,
             }
-            try:
-                sub = flow.get_subscription(cs.subscription_id)
-                info["status"] = sub.get("status")
-                info["period_end"] = sub.get("period_end")
-                info["next_invoice_date"] = sub.get("next_invoice_date")
-                info["cancel_at_period_end"] = sub.get("cancel_at_period_end")
-            except FlowError:
-                pass
-            try:
-                cust = flow.get_customer(cs.flow_customer_id)
-                info["card"] = {
-                    "type": cust.get("creditCardType"),
-                    "last4": cust.get("last4CardDigits"),
-                }
-            except FlowError:
-                pass
+            if cs.provider == PaymentProvider.PAYPAL:
+                self._fill_paypal(cs, info)
+            else:
+                self._fill_flow(cs, info)
             subs.append(info)
         return Response({"email": email, "subscriptions": subs})
 
+    @staticmethod
+    def _fill_flow(cs, info: dict) -> None:
+        flow = get_flow_client()
+        try:
+            sub = flow.get_subscription(cs.subscription_id)
+            info["status"] = sub.get("status")
+            info["period_end"] = sub.get("period_end")
+            info["next_invoice_date"] = sub.get("next_invoice_date")
+            info["cancel_at_period_end"] = sub.get("cancel_at_period_end")
+        except FlowError:
+            pass
+        try:
+            cust = flow.get_customer(cs.flow_customer_id)
+            info["card"] = {"type": cust.get("creditCardType"), "last4": cust.get("last4CardDigits")}
+        except FlowError:
+            pass
+
+    @staticmethod
+    def _fill_paypal(cs, info: dict) -> None:
+        info["amount"] = float(cs.plan.paypal_price_usd) if cs.plan.paypal_price_usd is not None else None
+        info["currency"] = cs.plan.paypal_currency
+        try:
+            sub = get_paypal_client().get_subscription(cs.subscription_id)
+            info["status"] = sub.get("status")
+            billing = sub.get("billing_info", {}) or {}
+            info["next_invoice_date"] = billing.get("next_billing_time")
+        except PayPalError:
+            pass
+
 
 class MemberCancelView(APIView):
-    """POST (Bearer) {subscription_id} → el miembro cancela su propia suscripción
-    (al final del período: conserva el acceso hasta que termine lo ya pagado)."""
+    """POST (Bearer) {subscription_id} → el miembro cancela su propia suscripción.
+    En Flow se cancela al final del período; en PayPal el corte es inmediato (la
+    API no expone 'al final del período'), pero PayPal no reembolsa lo ya pagado."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -615,14 +909,37 @@ class MemberCancelView(APIView):
         if not email:
             return Response({"detail": "No autenticado."}, status=401)
         sub_id = (request.data.get("subscription_id") or "").strip()
-        owns = CheckoutSession.objects.filter(email__iexact=email, subscription_id=sub_id).exists()
-        if not (sub_id and owns):
+        cs = CheckoutSession.objects.filter(email__iexact=email, subscription_id=sub_id).first()
+        if not (sub_id and cs):
             return Response({"detail": "Suscripción no encontrada."}, status=404)
         try:
-            res = get_flow_client().cancel_subscription(sub_id, at_period_end=True)
-        except FlowError as exc:
+            if cs.provider == PaymentProvider.PAYPAL:
+                res = get_paypal_client().cancel_subscription(sub_id, reason="Cancelada por el miembro")
+            else:
+                res = get_flow_client().cancel_subscription(sub_id, at_period_end=True)
+        except (FlowError, PayPalError) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         return Response(res)
+
+
+def _subscription_is_active(cs: CheckoutSession) -> bool:
+    """
+    Verifica EN VIVO si la suscripción de una ``CheckoutSession`` está activa,
+    consultando la pasarela según ``cs.provider`` (Flow ``status == 1`` / PayPal
+    ``status == ACTIVE``). Ante un fallo de la pasarela devuelve ``True``
+    (fallback): no se bloquea a un miembro al día por una caída puntual.
+    """
+    if cs.provider == PaymentProvider.PAYPAL:
+        try:
+            sub = get_paypal_client().get_subscription(cs.subscription_id)
+            return sub.get("status") == "ACTIVE"
+        except PayPalError:
+            return True
+    try:
+        sub = get_flow_client().get_subscription(cs.subscription_id)
+        return str(sub.get("status")) == "1"
+    except FlowError:
+        return True
 
 
 def _active_subscription_id(flow, plan_id: str, customer_id: str) -> str | None:
