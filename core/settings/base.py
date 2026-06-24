@@ -340,6 +340,23 @@ PAYPAL_BRAND_NAME = env("PAYPAL_BRAND_NAME", default="Lita Donoso")
 PUBLIC_API_BASE_URL = env("PUBLIC_API_BASE_URL", default="http://localhost:8080")
 FRONTEND_BASE_URL = env("FRONTEND_BASE_URL", default="http://localhost:4201")
 
+# ─── Zoom (sesiones en vivo embebidas con el Meeting SDK) ─────────────────────
+# El miembro NO recibe un link de Zoom: el backend emite una firma de vida corta
+# (subscriptions/services/zoom.py) solo si tiene el plan activo y estamos dentro
+# de la franja horaria de la sesión. Credenciales desde marketplace.zoom.us → app
+# tipo "Meeting SDK" (SDK Key / SDK Secret). Funciona con cuenta Zoom GRATIS para
+# pruebas (límite de 40 min por reunión).
+ZOOM_SDK_KEY = env("ZOOM_SDK_KEY", default="")
+ZOOM_SDK_SECRET = env("ZOOM_SDK_SECRET", default="")
+# Minutos ANTES de live_start en que se abre el acceso a la sala.
+ZOOM_LIVE_OPEN_BEFORE_MIN = env.int("ZOOM_LIVE_OPEN_BEFORE_MIN", default=15)
+# Duración por defecto (min) si la sesión no define live_end.
+ZOOM_DEFAULT_DURATION_MIN = env.int("ZOOM_DEFAULT_DURATION_MIN", default=240)
+# Candado de "entrada única en vivo": segundos que dura la marca de presencia de
+# un miembro en una sesión Zoom. El frontend la renueva con un latido (~30s); si
+# expira sin latido (cerró la pestaña), otro dispositivo puede entrar.
+ZOOM_LIVE_LOCK_TTL = env.int("ZOOM_LIVE_LOCK_TTL", default=75)
+
 # REST Framework
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (

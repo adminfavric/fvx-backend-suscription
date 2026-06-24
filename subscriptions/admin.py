@@ -154,10 +154,22 @@ class CheckoutSessionAdmin(admin.ModelAdmin):
 
 @admin.register(ContentItem)
 class ContentItemAdmin(admin.ModelAdmin):
-    list_display = ["title", "kind", "is_published", "order", "created"]
+    list_display = ["title", "kind", "is_published", "live_start", "order", "created"]
     list_filter = ["kind", "is_published"]
     search_fields = ["title", "text"]
     ordering = ["order"]
+    fieldsets = (
+        (None, {"fields": ("title", "kind", "text", "order", "is_published")}),
+        (_("Archivo / enlace"), {"fields": ("file_url", "external_url", "image_url")}),
+        (_("Sesión en vivo (Zoom)"), {
+            "fields": ("zoom_meeting_number", "zoom_passcode", "live_start", "live_end"),
+            "description": _(
+                "Solo para tipo 'Sesión Zoom'. El número de reunión y el passcode se "
+                "guardan en el servidor; el miembro NUNCA ve el link. El acceso se abre "
+                "unos minutos antes de 'live start' y se cierra en 'live end'."
+            ),
+        }),
+    )
 
 
 @admin.register(ContentSchedule)

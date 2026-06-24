@@ -20,8 +20,10 @@ from rest_framework.views import APIView
 
 from api.permissions import IsAdminOrReadOnly
 
+import re
 import secrets
 
+from django.core.cache import cache
 from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
@@ -55,7 +57,7 @@ from .services import (
     sync_plan_to_flow,
     sync_plan_to_paypal,
 )
-from .services import member_auth
+from .services import member_auth, zoom
 
 
 class PlanViewSet(viewsets.ModelViewSet):
@@ -758,7 +760,54 @@ def _member_email(request) -> str | None:
     return member_auth.email_from_token(auth[7:].strip())
 
 
-class MemberContentView(APIView):
+def _member_identity(request) -> tuple[str | None, str | None]:
+    """Lee el Bearer token y devuelve ``(email, sid)`` del miembro. El ``sid``
+    distingue el login/dispositivo concreto (para el candado de entrada en vivo)."""
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None, None
+    return member_auth.identity_from_token(auth[7:].strip())
+
+
+def _zoom_live_key(email: str, content_id: int) -> str:
+    return f"zoomlive:{email}:{content_id}"
+
+
+def _member_active_plan_ids(email: str) -> list[int]:
+    """
+    Planes con suscripción ACTIVA del miembro, verificada EN VIVO contra la
+    pasarela correspondiente (Flow o PayPal según ``cs.provider``). Si la pasarela
+    no responde, cae al registro local para no bloquear a un miembro al día por una
+    caída puntual. Compartido por el contenido y la firma de Zoom.
+    """
+    active: set[int] = set()
+    sessions = CheckoutSession.objects.filter(
+        email__iexact=email, status=CheckoutSession.Status.SUBSCRIBED
+    )
+    for cs in sessions:
+        if not cs.subscription_id:
+            active.add(cs.plan_id)
+            continue
+        if _subscription_is_active(cs):
+            active.add(cs.plan_id)
+        # inactiva/cancelada → NO se agrega (sin acceso)
+    return list(active)
+
+
+class _MemberApiView(APIView):
+    """
+    Base de los endpoints del ÁREA DE MIEMBROS. Usan token propio (Bearer firmado,
+    no usuario Django) y quedan EXENTOS del throttle de DRF: el latido de la sala
+    Zoom (~cada 30s) y las recargas normales superarían el cupo ``anon`` (120/h)
+    y bloquearían al miembro. El anti-abuso real vive en request-code/verify-code.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = []
+
+
+class MemberContentView(_MemberApiView):
     """
     GET (Bearer token de miembro) → contenido de los planes a los que el miembro
     tiene una suscripción ACTIVA. El acceso se determina por las
@@ -774,7 +823,7 @@ class MemberContentView(APIView):
         if not email:
             return Response({"detail": "No autenticado."}, status=401)
 
-        plan_ids = self._active_plan_ids(email)
+        plan_ids = _member_active_plan_ids(email)
         plans = Plan.objects.filter(id__in=plan_ids).values("slug", "name")
 
         # Biblioteca = contenido cuya PROGRAMACIÓN está vigente hoy en alguno de
@@ -799,29 +848,149 @@ class MemberContentView(APIView):
             }
         )
 
-    def _active_plan_ids(self, email: str) -> list[int]:
-        """
-        Planes con suscripción ACTIVA del miembro, verificada EN VIVO contra la
-        pasarela correspondiente (Flow o PayPal según ``cs.provider``). Recorre las
-        ``CheckoutSession`` suscritas de ese email y consulta el estado real de
-        cada suscripción. Si la pasarela no responde, cae al registro local para no
-        bloquear a un miembro al día por una caída puntual.
-        """
-        active: set[int] = set()
-        sessions = CheckoutSession.objects.filter(
-            email__iexact=email, status=CheckoutSession.Status.SUBSCRIBED
+
+class MemberZoomSignatureView(_MemberApiView):
+    """
+    POST (Bearer) ``/public/member/content/<id>/zoom/`` → firma de vida corta para
+    unirse a la sesión Zoom EMBEBIDA (``/sala/:id`` en el frontend).
+
+    El acceso lo decide el servidor en el momento de entrar. Solo devuelve la firma
+    si TODO se cumple:
+      1. el miembro está autenticado (Bearer token);
+      2. el contenido es una sesión Zoom publicada;
+      3. está programado HOY en uno de los planes ACTIVOS del miembro (p. ej. Oro);
+      4. estamos dentro de la franja horaria (``live_start``/``live_end``).
+
+    El número de reunión y el passcode NUNCA se exponen como link reenviable:
+    viajan solo en esta respuesta, al miembro habilitado y dentro de la franja.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, content_id: int):
+        email, sid = _member_identity(request)
+        if not email:
+            return Response({"detail": "No autenticado."}, status=401)
+
+        try:
+            item = ContentItem.objects.get(
+                id=content_id, kind=ContentItem.Kind.ZOOM, is_published=True
+            )
+        except ContentItem.DoesNotExist:
+            return Response({"detail": "Sesión no encontrada."}, status=404)
+
+        # ¿El miembro tiene un plan activo donde este contenido está programado hoy?
+        plan_ids = _member_active_plan_ids(email)
+        today = timezone.localdate()
+        allowed = (
+            ContentSchedule.objects.filter(
+                content_id=item.id, plan_id__in=plan_ids, starts_at__lte=today
+            )
+            .filter(Q(ends_at__isnull=True) | Q(ends_at__gte=today))
+            .exists()
         )
-        for cs in sessions:
-            if not cs.subscription_id:
-                active.add(cs.plan_id)
-                continue
-            if _subscription_is_active(cs):
-                active.add(cs.plan_id)
-            # inactiva/cancelada → NO se agrega (sin acceso)
-        return list(active)
+        if not allowed:
+            return Response({"detail": "No tienes acceso a esta sesión."}, status=403)
+
+        if not item.zoom_meeting_number:
+            return Response(
+                {"detail": "La sesión aún no tiene una reunión Zoom configurada."},
+                status=409,
+            )
+
+        if not item.is_live_open():
+            return Response(
+                {
+                    "detail": "La sala todavía no está abierta.",
+                    "opens_at": item.live_opens_at,
+                    "closes_at": item.live_closes_at,
+                },
+                status=409,
+            )
+
+        # Candado de ENTRADA ÚNICA EN VIVO: si este correo ya está dentro de la
+        # sesión desde otro login/dispositivo (marca de presencia vigente con un
+        # ``sid`` distinto), se rechaza. Evita compartir la cuenta en simultáneo.
+        live_key = _zoom_live_key(email, item.id)
+        holder = cache.get(live_key)
+        if holder and holder != sid:
+            return Response(
+                {"detail": "Ya estás conectado a esta sesión en otro dispositivo."},
+                status=409,
+            )
+
+        # El SDK exige el número de reunión SOLO con dígitos (sin espacios/guiones
+        # como vienen al copiar "858 0229 1303"); si no, falla con length > 12.
+        meeting_number = re.sub(r"\D", "", item.zoom_meeting_number)
+
+        try:
+            sig = zoom.meeting_signature(meeting_number)
+        except zoom.ZoomConfigError:
+            return Response(
+                {"detail": "Zoom no está configurado en el servidor."}, status=503
+            )
+
+        # Tomamos la presencia para este login; el frontend la renueva con latidos.
+        cache.set(live_key, sid, getattr(settings, "ZOOM_LIVE_LOCK_TTL", 75))
+
+        return Response(
+            {
+                "signature": sig["signature"],
+                "sdkKey": sig["sdkKey"],
+                "meetingNumber": meeting_number,
+                "passcode": item.zoom_passcode.strip(),
+                "userName": email,
+                "userEmail": email,
+                "topic": item.title,
+            }
+        )
 
 
-class MemberAccountView(APIView):
+class MemberZoomHeartbeatView(_MemberApiView):
+    """
+    POST (Bearer) ``/public/member/content/<id>/zoom/heartbeat/`` → mantiene viva
+    la marca de presencia mientras el miembro está en la sala. Si otro
+    login/dispositivo tomó la sesión (``sid`` distinto), responde 409 para que
+    este cliente sea expulsado.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, content_id: int):
+        email, sid = _member_identity(request)
+        if not email:
+            return Response({"detail": "No autenticado."}, status=401)
+        live_key = _zoom_live_key(email, content_id)
+        holder = cache.get(live_key)
+        if holder and holder != sid:
+            return Response(
+                {"detail": "Tu sesión se abrió en otro dispositivo."}, status=409
+            )
+        cache.set(live_key, sid, getattr(settings, "ZOOM_LIVE_LOCK_TTL", 75))
+        return Response({"ok": True})
+
+
+class MemberZoomLeaveView(_MemberApiView):
+    """POST (Bearer) ``/public/member/content/<id>/zoom/leave/`` → libera la marca
+    de presencia al salir de la sala (si es de este login), para que el miembro
+    pueda reentrar de inmediato desde otro lado sin esperar a que expire el TTL."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, content_id: int):
+        email, sid = _member_identity(request)
+        if not email:
+            return Response({"detail": "No autenticado."}, status=401)
+        live_key = _zoom_live_key(email, content_id)
+        if cache.get(live_key) == sid:
+            cache.delete(live_key)
+        return Response({"ok": True})
+
+
+class MemberAccountView(_MemberApiView):
     """GET (Bearer) → suscripciones del miembro con estado real (Flow o PayPal
     según ``provider``) + método de pago. Base de la sección 'Mi suscripción'."""
 
@@ -896,7 +1065,7 @@ class MemberAccountView(APIView):
             pass
 
 
-class MemberCancelView(APIView):
+class MemberCancelView(_MemberApiView):
     """POST (Bearer) {subscription_id} → el miembro cancela su propia suscripción.
     En Flow se cancela al final del período; en PayPal el corte es inmediato (la
     API no expone 'al final del período'), pero PayPal no reembolsa lo ya pagado."""
