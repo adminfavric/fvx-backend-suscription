@@ -314,12 +314,13 @@ def _status_breakdown() -> List[dict[str, Any]]:
 
 
 def _provider_breakdown() -> List[dict[str, Any]]:
-    """Miembros activos agrupados por pasarela / origen."""
+    """Pagos activos por pasarela / origen: cantidad (``value``) y monto asociado
+    (``amount`` = suma del precio de los planes, CLP)."""
     active_q = _active_member_q()
     grouped = (
         CheckoutSession.objects.filter(active_q)
         .values("provider")
-        .annotate(total=Count("id"))
+        .annotate(total=Count("id"), amount=Sum("plan__amount"))
         .order_by("-total")
     )
     return [
@@ -327,6 +328,7 @@ def _provider_breakdown() -> List[dict[str, Any]]:
             "key": row["provider"],
             "label": _PROVIDER_LABELS.get(row["provider"], row["provider"]),
             "value": row["total"],
+            "amount": row["amount"] or 0,
         }
         for row in grouped
     ]

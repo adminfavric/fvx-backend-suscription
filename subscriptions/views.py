@@ -436,6 +436,56 @@ class ContentScheduleViewSet(viewsets.ModelViewSet):
     search_fields = ["content__title", "plan__name"]
     ordering_fields = ["starts_at", "ends_at", "created"]
 
+    @staticmethod
+    def _plan_ids(data) -> list:
+        """Lista de planes del payload: ``plans`` (múltiple) o ``plan`` (único)."""
+        plans = data.get("plans")
+        if plans:
+            return list(plans) if isinstance(plans, (list, tuple)) else [plans]
+        return [data["plan"]] if data.get("plan") else []
+
+    def create(self, request, *args, **kwargs):
+        """Crea UNA programación por cada membresía elegida (un contenido puede ir
+        a varios planes a la vez). Omite las que ya existen (unique content+plan)."""
+        data = request.data
+        content_id = data.get("content")
+        plan_ids = self._plan_ids(data)
+        if not content_id or not plan_ids:
+            return Response(
+                {"detail": "Elige el contenido y al menos una membresía."}, status=400
+            )
+        starts_at = data.get("starts_at") or timezone.localdate()
+        ends_at = data.get("ends_at") or None
+        created = []
+        for pid in plan_ids:
+            cs, _ = ContentSchedule.objects.get_or_create(
+                content_id=content_id, plan_id=pid,
+                defaults={"starts_at": starts_at, "ends_at": ends_at},
+            )
+            created.append(cs)
+        ser = self.get_serializer(created, many=True)
+        return Response(ser.data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        """Actualiza la fila (primer plan + fechas) y crea las extra si se eligieron
+        más membresías."""
+        instance = self.get_object()
+        data = request.data
+        plan_ids = self._plan_ids(data) or [instance.plan_id]
+        if data.get("content"):
+            instance.content_id = data["content"]
+        if data.get("starts_at"):
+            instance.starts_at = data["starts_at"]
+        instance.ends_at = data.get("ends_at") or None
+        instance.plan_id = plan_ids[0]
+        instance.save()
+        for pid in plan_ids[1:]:
+            ContentSchedule.objects.get_or_create(
+                content_id=instance.content_id, plan_id=pid,
+                defaults={"starts_at": instance.starts_at, "ends_at": instance.ends_at},
+            )
+        return Response(self.get_serializer(instance).data)
+
 
 def _add_months(d, months: int):
     """Suma ``months`` meses a una fecha sin dependencias externas (ajusta el día
@@ -1117,6 +1167,17 @@ class MemberEmailCheckView(_MemberApiView):
         if not email or "@" not in email:
             return Response({"has_active": False})
         return Response({"has_active": bool(_member_active_plan_ids(email))})
+
+
+class MemberPingView(_MemberApiView):
+    """GET (Bearer) → 200 si la sesión del miembro sigue vigente; 401 si fue
+    invalidada (p. ej. inició sesión en otro lugar — sesión única). Barato: no
+    consulta pasarelas. El frontend lo sondea para expulsar la sesión vieja."""
+
+    def get(self, request):
+        if not _member_email(request):
+            return Response({"detail": "Sesión no válida."}, status=401)
+        return Response({"ok": True})
 
 
 class MemberZoomSignatureView(_MemberApiView):
