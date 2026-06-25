@@ -26,6 +26,7 @@ from .views import (
     MemberAccountView,
     MemberCancelView,
     MemberContentView,
+    MemberEmailCheckView,
     MemberRequestCodeView,
     MemberVerifyCodeView,
     MemberZoomHeartbeatView,
@@ -75,6 +76,7 @@ urlpatterns = [
     # Área de miembros (login sin contraseña + contenido)
     path("public/member/request-code/", MemberRequestCodeView.as_view(), name="member-request-code"),
     path("public/member/verify-code/", MemberVerifyCodeView.as_view(), name="member-verify-code"),
+    path("public/member/check-email/", MemberEmailCheckView.as_view(), name="member-check-email"),
     path("public/member/content/", MemberContentView.as_view(), name="member-content"),
     path("public/member/content/<int:content_id>/zoom/", MemberZoomSignatureView.as_view(), name="member-zoom-signature"),
     path("public/member/content/<int:content_id>/zoom/heartbeat/", MemberZoomHeartbeatView.as_view(), name="member-zoom-heartbeat"),

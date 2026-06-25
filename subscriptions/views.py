@@ -1105,6 +1105,20 @@ class MemberContentView(_MemberApiView):
         )
 
 
+class MemberEmailCheckView(_MemberApiView):
+    """
+    PÚBLICO: indica si un correo YA tiene una membresía ACTIVA. Lo usa el checkout
+    para evitar que alguien se suscriba de nuevo con un correo ya registrado
+    (en su lugar, se le pide iniciar sesión / cambiar de plan).
+    """
+
+    def get(self, request):
+        email = (request.query_params.get("email") or "").strip()
+        if not email or "@" not in email:
+            return Response({"has_active": False})
+        return Response({"has_active": bool(_member_active_plan_ids(email))})
+
+
 class MemberZoomSignatureView(_MemberApiView):
     """
     POST (Bearer) ``/public/member/content/<id>/zoom/`` → firma de vida corta para
