@@ -110,7 +110,11 @@ class FlowClient:
 
     def edit_plan(self, plan_id: str, **params: Any) -> dict[str, Any]:
         """POST /plans/edit. If the plan has subscribers, only trial_period_days is editable."""
-        return self._post("plans/edit", planId=plan_id, **params)
+        # ``params`` puede ya traer ``planId`` (lo arma ``_flow_params``); forzamos
+        # un único valor para no chocar con el ``planId`` posicional (evita
+        # "got multiple values for keyword argument 'planId'").
+        params["planId"] = plan_id
+        return self._post("plans/edit", **params)
 
     def delete_plan(self, plan_id: str) -> dict[str, Any]:
         return self._post("plans/delete", planId=plan_id)

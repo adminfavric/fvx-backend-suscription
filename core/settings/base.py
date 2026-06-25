@@ -357,6 +357,10 @@ ZOOM_DEFAULT_DURATION_MIN = env.int("ZOOM_DEFAULT_DURATION_MIN", default=240)
 # expira sin latido (cerró la pestaña), otro dispositivo puede entrar.
 ZOOM_LIVE_LOCK_TTL = env.int("ZOOM_LIVE_LOCK_TTL", default=75)
 
+# Días que se conservan los cobros por link PENDIENTES (sin pagar) antes de
+# eliminarse solos. No afecta a los pagados/activos.
+PAYMENT_LINK_PENDING_TTL_DAYS = env.int("PAYMENT_LINK_PENDING_TTL_DAYS", default=7)
+
 # REST Framework
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (

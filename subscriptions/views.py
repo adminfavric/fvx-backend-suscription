@@ -22,6 +22,7 @@ from api.permissions import IsAdminOrReadOnly
 
 import re
 import secrets
+from datetime import timedelta
 
 from django.core.cache import cache
 from django.db.models import Q
@@ -421,6 +422,33 @@ def _settle_payment_link(token: str):
     return cs
 
 
+def _create_flow_payment_link(plan, name: str, email: str, months: int) -> CheckoutSession:
+    """Crea un pago (link de pago) en Flow y su ``CheckoutSession`` por período
+    (pendiente). Devuelve la sesión. Lanza ``FlowError`` si Flow falla. Compartido
+    por el panel (admin) y el checkout público (autoservicio)."""
+    commerce_order = f"LINK-{plan.id}-{secrets.token_hex(5)}"
+    base = settings.PUBLIC_API_BASE_URL
+    pay = get_flow_client().create_payment(
+        commerceOrder=commerce_order,
+        subject=f"{plan.name} · {months} mes(es)",
+        amount=plan.amount,
+        currency=plan.currency or "CLP",
+        email=email,
+        urlConfirmation=f"{base}/api/v1/public/payment-link/confirm/",
+        urlReturn=f"{base}/api/v1/public/payment-link/return/",
+    )
+    return CheckoutSession.objects.create(
+        provider=PaymentProvider.FLOW_ONE_TIME,
+        plan=plan,
+        name=name,
+        email=email,
+        status=CheckoutSession.Status.PENDING_CARD,
+        register_token=pay.get("token") or None,
+        payment_url=f"{pay['url']}?token={pay['token']}",
+        period_months=months,
+    )
+
+
 class PaymentLinkViewSet(viewsets.ModelViewSet):
     """
     Cobros por LINK DE PAGO de Flow (admin). ``create`` genera un link en Flow
@@ -456,33 +484,29 @@ class PaymentLinkViewSet(viewsets.ModelViewSet):
                 {"detail": "El plan no tiene precio definido; no se puede cobrar."},
                 status=409,
             )
-
-        commerce_order = f"LINK-{plan.id}-{secrets.token_hex(5)}"
-        base = settings.PUBLIC_API_BASE_URL
         try:
-            pay = get_flow_client().create_payment(
-                commerceOrder=commerce_order,
-                subject=f"{plan.name} · {months} mes(es)",
-                amount=plan.amount,
-                currency=plan.currency or "CLP",
-                email=email,
-                urlConfirmation=f"{base}/api/v1/public/payment-link/confirm/",
-                urlReturn=f"{base}/api/v1/public/payment-link/return/",
-            )
+            cs = _create_flow_payment_link(plan, name, email, months)
         except FlowError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
-
-        cs = CheckoutSession.objects.create(
-            provider=PaymentProvider.FLOW_ONE_TIME,
-            plan=plan,
-            name=name,
-            email=email,
-            status=CheckoutSession.Status.PENDING_CARD,
-            register_token=pay.get("token") or None,
-            payment_url=f"{pay['url']}?token={pay['token']}",
-            period_months=months,
-        )
         return Response(self.get_serializer(cs).data, status=status.HTTP_201_CREATED)
+
+    def list(self, request, *args, **kwargs):
+        # Caducidad: elimina los cobros PENDIENTES (sin pagar) más antiguos que N
+        # días (no tocan los pagados/activos). Limpieza perezosa al abrir la lista.
+        days = getattr(settings, "PAYMENT_LINK_PENDING_TTL_DAYS", 7)
+        self.get_queryset().filter(
+            status=CheckoutSession.Status.PENDING_CARD,
+            created__lt=timezone.now() - timedelta(days=days),
+        ).delete()
+        return super().list(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        # No permitir borrar un cobro ya pagado/activo (es el registro de acceso).
+        if self.get_object().status == CheckoutSession.Status.SUBSCRIBED:
+            return Response(
+                {"detail": "No puedes eliminar un cobro ya pagado/activo."}, status=409
+            )
+        return super().destroy(request, *args, **kwargs)
 
     @action(detail=True, methods=["post"])
     def verify(self, request, pk=None):
@@ -524,6 +548,42 @@ class PaymentLinkReturnView(View):
         return HttpResponseRedirect(
             f"{settings.FRONTEND_BASE_URL}/acceso?pago={'ok' if ok else 'pendiente'}"
         )
+
+
+class PaymentLinkStartView(APIView):
+    """
+    PÚBLICO (autoservicio del suscriptor): inicia un cobro por LINK DE PAGO de Flow
+    para un plan. El visitante completa nombre + correo en el checkout y elige
+    "pagar un mes / por transferencia"; aquí creamos el pago en Flow y devolvemos
+    la URL a la que se le redirige. Al volver del pago, ``PaymentLinkReturnView``
+    activa el acceso automáticamente (sin intervención del admin).
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        slug = (request.data.get("plan_slug") or "").strip()
+        name = (request.data.get("name") or "").strip()
+        email = (request.data.get("email") or "").strip()
+        try:
+            months = max(1, int(request.data.get("months", 1)))
+        except (TypeError, ValueError):
+            months = 1
+        if not (slug and name and email):
+            return Response({"detail": "plan_slug, name y email son requeridos."}, status=400)
+
+        plan = Plan.objects.filter(slug=slug, is_active=True).first()
+        if not plan:
+            return Response({"detail": "Membresía no encontrada."}, status=404)
+        if not plan.amount:
+            return Response({"detail": "Esta membresía no tiene precio definido aún."}, status=409)
+
+        try:
+            cs = _create_flow_payment_link(plan, name, email, months)
+        except FlowError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({"redirect_url": cs.payment_url})
 
 
 class FlowSubscriptionCancelView(APIView):
