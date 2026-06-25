@@ -4,6 +4,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    AdminSubscriptionListView,
     CheckoutReturnView,
     CheckoutStartView,
     ContentItemViewSet,
@@ -51,6 +52,7 @@ urlpatterns = [
     # Espejos de solo lectura desde Flow (admin)
     path("customers/", FlowCustomersListView.as_view(), name="flow-customers"),
     path("subscriptions/", FlowSubscriptionsListView.as_view(), name="flow-subscriptions"),
+    path("subscriptions/all/", AdminSubscriptionListView.as_view(), name="subscriptions-all"),
     path("subscriptions/cancel/", FlowSubscriptionCancelView.as_view(), name="flow-subscription-cancel"),
     path("subscriptions/reactivate/", FlowSubscriptionReactivateView.as_view(), name="flow-subscription-reactivate"),
     path("public/memberships/", PublicMembershipListView.as_view(), name="public-memberships"),

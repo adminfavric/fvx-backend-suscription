@@ -157,6 +157,53 @@ class FlowCustomersListView(APIView):
         return Response(data)
 
 
+_PROVIDER_LABELS = {
+    PaymentProvider.FLOW: "Flow (tarjeta)",
+    PaymentProvider.PAYPAL: "PayPal",
+    PaymentProvider.FLOW_ONE_TIME: "Link de pago",
+    PaymentProvider.MANUAL: "Manual / transferencia",
+    PaymentProvider.IMPORTED: "Importado",
+}
+
+
+class AdminSubscriptionListView(APIView):
+    """
+    Lista GENÉRICA de suscripciones (todas las pasarelas) para el admin, desde el
+    espejo local ``CheckoutSession`` que unifica Flow, PayPal, link de pago y
+    manual. Muestra solo las ACTIVAS (``subscribed``) con su ``provider`` (origen),
+    plan, cliente, estado y vencimiento (para las de período).
+    """
+
+    permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
+
+    def get(self, request):
+        qs = (
+            CheckoutSession.objects.filter(status=CheckoutSession.Status.SUBSCRIBED)
+            .select_related("plan")
+            .order_by("-created")
+        )
+        rows = []
+        for cs in qs:
+            rows.append(
+                {
+                    "id": cs.id,
+                    "provider": cs.provider,
+                    "provider_label": _PROVIDER_LABELS.get(cs.provider, cs.provider),
+                    "plan_name": cs.plan.name if cs.plan_id else "—",
+                    "name": cs.name,
+                    "email": cs.email,
+                    "subscription_id": cs.subscription_id,
+                    "is_period": cs.is_period_based,
+                    "access_until": cs.access_until,
+                    # Para período: vigente si la fecha no venció. Para recurrente:
+                    # se asume activa (el detalle de Flow lo da la vista en vivo).
+                    "is_active": cs.has_period_access if cs.is_period_based else True,
+                    "created": cs.created,
+                }
+            )
+        return Response({"data": rows})
+
+
 class FlowSubscriptionsListView(APIView):
     """
     Suscripciones desde Flow (espejo de solo lectura para el admin). Flow exige
@@ -231,6 +278,7 @@ class PublicMembershipListView(generics.ListAPIView):
     serializer_class = PublicMembershipSerializer
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = []  # catálogo público de lectura: no consumir el cupo anon
     pagination_class = None
 
 
@@ -262,6 +310,7 @@ class PublicEventListView(generics.ListAPIView):
     serializer_class = PublicEventSerializer
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = []  # catálogo público de lectura: no consumir el cupo anon
     pagination_class = None
 
 

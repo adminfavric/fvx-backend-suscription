@@ -392,7 +392,7 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_THROTTLE_RATES": {
         "user": env("THROTTLE_USER", default="2000/hour"),
-        "anon": env("THROTTLE_ANON", default="120/hour"),
+        "anon": env("THROTTLE_ANON", default="600/hour"),
         "upload": env("THROTTLE_UPLOAD", default="60/hour"),
         "social": "30/hour",
         # Login (/api/auth/token/): protección contra credential stuffing y
