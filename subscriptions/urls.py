@@ -13,6 +13,9 @@ from .views import (
     EventReturnView,
     EventViewSet,
     LeadViewSet,
+    PaymentLinkConfirmView,
+    PaymentLinkReturnView,
+    PaymentLinkViewSet,
     PublicEventListView,
     FlowCustomersListView,
     FlowSubscriptionCancelView,
@@ -40,6 +43,7 @@ router.register(r"plans", PlanViewSet, basename="plan")
 router.register(r"events", EventViewSet, basename="event")
 router.register(r"content-items", ContentItemViewSet, basename="content-item")
 router.register(r"content-schedules", ContentScheduleViewSet, basename="content-schedule")
+router.register(r"payment-links", PaymentLinkViewSet, basename="payment-link")
 router.register(r"leads", LeadViewSet, basename="lead")
 
 urlpatterns = [
@@ -53,6 +57,9 @@ urlpatterns = [
     path("public/events/checkout/", EventCheckoutView.as_view(), name="public-event-checkout"),
     path("public/events/return/", EventReturnView.as_view(), name="public-event-return"),
     path("public/events/confirm/", EventConfirmView.as_view(), name="public-event-confirm"),
+    # Link de pago de Flow (cobro por link generado desde el panel)
+    path("public/payment-link/confirm/", PaymentLinkConfirmView.as_view(), name="payment-link-confirm"),
+    path("public/payment-link/return/", PaymentLinkReturnView.as_view(), name="payment-link-return"),
     path("public/leads/", PublicLeadCreateView.as_view(), name="public-leads"),
     path("public/checkout/start/", CheckoutStartView.as_view(), name="checkout-start"),
     path("public/checkout/return/", CheckoutReturnView.as_view(), name="checkout-return"),

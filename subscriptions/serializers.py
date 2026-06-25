@@ -2,7 +2,15 @@
 
 from rest_framework import serializers
 
-from .models import ContentItem, ContentSchedule, Event, Lead, Plan
+from .models import (
+    CheckoutSession,
+    ContentItem,
+    ContentSchedule,
+    Event,
+    Lead,
+    PaymentProvider,
+    Plan,
+)
 
 
 class PlanSerializer(serializers.ModelSerializer):
@@ -151,6 +159,44 @@ class MemberContentSerializer(serializers.ModelSerializer):
 
     def get_closes_at(self, obj: ContentItem):
         return obj.live_closes_at if obj.kind == ContentItem.Kind.ZOOM else None
+
+
+class PaymentLinkSerializer(serializers.ModelSerializer):
+    """
+    Cobro por LINK DE PAGO de Flow. El admin genera un link (pago único que
+    habilita ``period_months`` meses); se envía al cliente, que paga con cualquier
+    medio (tarjeta, débito, transferencia) dentro de Flow. Al confirmar el pago
+    (botón "Verificar pago"), la membresía pasa a ``subscribed`` y se fija
+    ``access_until = hoy + period_months``. Se guarda como ``CheckoutSession`` con
+    ``provider="flow_mensual"``.
+
+    Para CREAR solo se envían ``plan``, ``email``, ``name`` y ``months``; el resto
+    (token, URL del link, estado) lo completa la vista al llamar a Flow.
+    """
+
+    plan_name = serializers.CharField(source="plan.name", read_only=True)
+    is_active = serializers.SerializerMethodField()
+    is_paid = serializers.SerializerMethodField()
+    # Alias de entrada para los meses (el modelo usa ``period_months``).
+    months = serializers.IntegerField(source="period_months", required=False, min_value=1, default=1)
+
+    class Meta:
+        model = CheckoutSession
+        fields = [
+            "id", "plan", "plan_name", "name", "email", "months",
+            "access_until", "payment_url", "status", "provider",
+            "is_active", "is_paid", "created",
+        ]
+        read_only_fields = [
+            "id", "plan_name", "access_until", "payment_url", "status",
+            "provider", "is_active", "is_paid", "created",
+        ]
+
+    def get_is_active(self, obj: CheckoutSession) -> bool:
+        return obj.has_period_access and obj.status == CheckoutSession.Status.SUBSCRIBED
+
+    def get_is_paid(self, obj: CheckoutSession) -> bool:
+        return obj.status == CheckoutSession.Status.SUBSCRIBED
 
 
 class LeadSerializer(serializers.ModelSerializer):

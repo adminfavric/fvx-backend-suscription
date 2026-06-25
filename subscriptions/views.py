@@ -44,6 +44,7 @@ from .serializers import (
     EventSerializer,
     LeadSerializer,
     MemberContentSerializer,
+    PaymentLinkSerializer,
     PlanSerializer,
     PublicEventSerializer,
     PublicMembershipSerializer,
@@ -384,6 +385,145 @@ class ContentScheduleViewSet(viewsets.ModelViewSet):
     filterset_fields = ["plan", "content"]
     search_fields = ["content__title", "plan__name"]
     ordering_fields = ["starts_at", "ends_at", "created"]
+
+
+def _add_months(d, months: int):
+    """Suma ``months`` meses a una fecha sin dependencias externas (ajusta el día
+    al último del mes si hiciera falta)."""
+    import calendar
+
+    m = d.month - 1 + months
+    year = d.year + m // 12
+    month = m % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return d.replace(year=year, month=month, day=day)
+
+
+def _settle_payment_link(token: str):
+    """Consulta el estado del pago del link en Flow y, si está pagado (status 2),
+    activa la membresía: ``subscribed`` + ``access_until = hoy + period_months``.
+    Compartido por el botón 'Verificar pago' y el webhook de confirmación."""
+    if not token:
+        return None
+    cs = CheckoutSession.objects.filter(
+        register_token=token, provider=PaymentProvider.FLOW_ONE_TIME
+    ).first()
+    if not cs:
+        return None
+    try:
+        st = get_flow_client().get_payment_status(token)
+    except FlowError:
+        return cs
+    if str(st.get("status")) == "2":  # 2 = pagada
+        cs.status = CheckoutSession.Status.SUBSCRIBED
+        cs.access_until = _add_months(timezone.localdate(), max(1, cs.period_months))
+        cs.save(update_fields=["status", "access_until", "modified"])
+    return cs
+
+
+class PaymentLinkViewSet(viewsets.ModelViewSet):
+    """
+    Cobros por LINK DE PAGO de Flow (admin). ``create`` genera un link en Flow
+    (pago único que habilita N meses) para enviar al cliente; ``verify`` consulta
+    el estado del pago y activa la membresía si ya pagó. Reemplaza la modalidad
+    manual/transferencia: el cliente paga con cualquier medio dentro de Flow.
+    """
+
+    serializer_class = PaymentLinkSerializer
+    permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
+    queryset = (
+        CheckoutSession.objects.filter(provider=PaymentProvider.FLOW_ONE_TIME)
+        .select_related("plan")
+        .order_by("-created")
+    )
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ["plan", "status"]
+    search_fields = ["email", "name"]
+    ordering_fields = ["created", "access_until", "email"]
+    # Solo se crea/lista/borra y se verifica; no edición directa del link.
+    http_method_names = ["get", "post", "delete", "head", "options"]
+
+    def create(self, request, *args, **kwargs):
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+        plan = data["plan"]
+        email = (data.get("email") or "").strip()
+        name = (data.get("name") or "").strip()
+        months = max(1, int(data.get("period_months", 1)))
+        if not plan.amount:
+            return Response(
+                {"detail": "El plan no tiene precio definido; no se puede cobrar."},
+                status=409,
+            )
+
+        commerce_order = f"LINK-{plan.id}-{secrets.token_hex(5)}"
+        base = settings.PUBLIC_API_BASE_URL
+        try:
+            pay = get_flow_client().create_payment(
+                commerceOrder=commerce_order,
+                subject=f"{plan.name} · {months} mes(es)",
+                amount=plan.amount,
+                currency=plan.currency or "CLP",
+                email=email,
+                urlConfirmation=f"{base}/api/v1/public/payment-link/confirm/",
+                urlReturn=f"{base}/api/v1/public/payment-link/return/",
+            )
+        except FlowError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        cs = CheckoutSession.objects.create(
+            provider=PaymentProvider.FLOW_ONE_TIME,
+            plan=plan,
+            name=name,
+            email=email,
+            status=CheckoutSession.Status.PENDING_CARD,
+            register_token=pay.get("token") or None,
+            payment_url=f"{pay['url']}?token={pay['token']}",
+            period_months=months,
+        )
+        return Response(self.get_serializer(cs).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"])
+    def verify(self, request, pk=None):
+        """Consulta a Flow si el link ya fue pagado y activa el acceso si corresponde."""
+        cs = self.get_object()
+        if not cs.register_token:
+            return Response({"detail": "Este cobro no tiene token de Flow."}, status=409)
+        cs = _settle_payment_link(cs.register_token) or cs
+        return Response(
+            {**self.get_serializer(cs).data, "paid": cs.status == CheckoutSession.Status.SUBSCRIBED}
+        )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class PaymentLinkConfirmView(View):
+    """Webhook server-to-server de Flow (``urlConfirmation``). Activa el acceso al
+    pagar. Solo opera en prod / con URL pública; en local se usa 'Verificar pago'."""
+
+    def post(self, request):
+        _settle_payment_link(request.POST.get("token", ""))
+        return JsonResponse({"ok": True})
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class PaymentLinkReturnView(View):
+    """Retorno del navegador del cliente tras pagar el link: liquida y redirige al
+    sitio público con un parámetro de resultado."""
+
+    def get(self, request):
+        return self._handle(request)
+
+    def post(self, request):
+        return self._handle(request)
+
+    def _handle(self, request):
+        token = request.POST.get("token") or request.GET.get("token")
+        cs = _settle_payment_link(token)
+        ok = bool(cs and cs.status == CheckoutSession.Status.SUBSCRIBED)
+        return HttpResponseRedirect(
+            f"{settings.FRONTEND_BASE_URL}/acceso?pago={'ok' if ok else 'pendiente'}"
+        )
 
 
 class FlowSubscriptionCancelView(APIView):
@@ -785,6 +925,13 @@ def _member_active_plan_ids(email: str) -> list[int]:
         email__iexact=email, status=CheckoutSession.Status.SUBSCRIBED
     )
     for cs in sessions:
+        # Acceso por período (manual/importado/pago único): vale mientras
+        # access_until >= hoy. No se consulta ninguna pasarela.
+        if cs.is_period_based:
+            if cs.has_period_access:
+                active.add(cs.plan_id)
+            continue
+        # Recurrente (Flow/PayPal): se verifica en vivo contra la pasarela.
         if not cs.subscription_id:
             active.add(cs.plan_id)
             continue
@@ -1006,17 +1153,22 @@ class MemberAccountView(_MemberApiView):
             CheckoutSession.objects.filter(
                 email__iexact=email, status=CheckoutSession.Status.SUBSCRIBED
             )
-            .exclude(subscription_id="")
             .select_related("plan")
             .order_by("-created")
         )
         for cs in sessions:
-            if cs.subscription_id in seen:
+            # Clave de deduplicado: la suscripción de la pasarela, o la fila local
+            # para las membresías por período (que no tienen subscription_id).
+            key = cs.subscription_id or f"period:{cs.id}"
+            if not cs.is_period_based and not cs.subscription_id:
+                continue  # recurrente sin id de pasarela: nada que mostrar
+            if key in seen:
                 continue
-            seen.add(cs.subscription_id)
+            seen.add(key)
             info = {
-                "subscription_id": cs.subscription_id,
+                "subscription_id": cs.subscription_id or f"manual-{cs.id}",
                 "provider": cs.provider,
+                "is_manual": cs.is_period_based,
                 "plan_name": cs.plan.name,
                 "plan_slug": cs.plan.slug,
                 "amount": cs.plan.amount,
@@ -1028,12 +1180,21 @@ class MemberAccountView(_MemberApiView):
                 "cancel_at_period_end": None,
                 "card": None,
             }
-            if cs.provider == PaymentProvider.PAYPAL:
+            if cs.is_period_based:
+                self._fill_period(cs, info)
+            elif cs.provider == PaymentProvider.PAYPAL:
                 self._fill_paypal(cs, info)
             else:
                 self._fill_flow(cs, info)
             subs.append(info)
         return Response({"email": email, "subscriptions": subs})
+
+    @staticmethod
+    def _fill_period(cs, info: dict) -> None:
+        """Membresía por período (manual/importado/pago único): el estado y el
+        vencimiento salen de ``access_until`` local, sin consultar pasarela."""
+        info["status"] = 1 if cs.has_period_access else 0
+        info["period_end"] = cs.access_until.isoformat() if cs.access_until else None
 
     @staticmethod
     def _fill_flow(cs, info: dict) -> None:
