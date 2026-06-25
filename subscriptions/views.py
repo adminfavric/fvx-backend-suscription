@@ -1016,6 +1016,51 @@ class LeadViewSet(viewsets.ReadOnlyModelViewSet):
             lead.save(update_fields=[*changed, "modified"])
         return Response(self.get_serializer(lead).data)
 
+    @action(detail=True, methods=["post"])
+    def reply(self, request, pk=None):
+        """Envía un correo de respuesta al remitente del mensaje y lo marca como
+        respondido. Body: ``{subject?, body}``."""
+        from django.core.mail import EmailMultiAlternatives
+        from .services import member_auth as _ma
+
+        lead = self.get_object()
+        body = (request.data.get("body") or "").strip()
+        if not body:
+            return Response({"detail": "Escribe un mensaje para responder."}, status=400)
+        if not lead.email:
+            return Response({"detail": "Este mensaje no tiene un correo de destino."}, status=409)
+        subject = (request.data.get("subject") or "").strip() or f"Respuesta a tu mensaje · {_ma._SUBBRAND}"
+
+        html = f"""\
+<div style="background:{_ma._CREAM};padding:32px 12px;font-family:Arial,Helvetica,sans-serif;">
+  <table align="center" width="480" cellpadding="0" cellspacing="0" role="presentation"
+         style="max-width:480px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #eadfce;">
+    <tr><td bgcolor="{_ma._VIOLET}" style="background:{_ma._VIOLET};padding:24px 32px;text-align:center;">
+      <div style="color:{_ma._GOLD};font-size:11px;letter-spacing:3px;text-transform:uppercase;">{_ma._BRAND}</div>
+      <div style="color:#fff;font-size:20px;font-weight:bold;margin-top:6px;">{_ma._SUBBRAND}</div>
+    </td></tr>
+    <tr><td style="padding:30px 32px;color:#2a2333;font-size:15px;line-height:1.6;white-space:pre-line;">{body}</td></tr>
+    <tr><td bgcolor="#f4f0f8" style="background:#f4f0f8;padding:16px 32px;color:#9a93a8;font-size:12px;line-height:1.5;">
+      En respuesta a tu mensaje: "{(lead.message or lead.subject or '')[:140]}"
+    </td></tr>
+  </table>
+</div>"""
+        msg = EmailMultiAlternatives(
+            subject=subject, body=body, from_email=_ma._from_email(), to=[lead.email]
+        )
+        msg.attach_alternative(html, "text/html")
+        try:
+            msg.send(fail_silently=False)
+        except Exception:
+            return Response(
+                {"detail": "No se pudo enviar el correo. Revisa la configuración de email."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        lead.is_read = True
+        lead.is_replied = True
+        lead.save(update_fields=["is_read", "is_replied", "modified"])
+        return Response(self.get_serializer(lead).data)
+
 
 # ── Área de miembros (login sin contraseña + contenido por suscripción) ──────
 class MemberRequestCodeView(APIView):
