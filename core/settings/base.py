@@ -340,6 +340,27 @@ PAYPAL_BRAND_NAME = env("PAYPAL_BRAND_NAME", default="Lita Donoso")
 PUBLIC_API_BASE_URL = env("PUBLIC_API_BASE_URL", default="http://localhost:8080")
 FRONTEND_BASE_URL = env("FRONTEND_BASE_URL", default="http://localhost:4201")
 
+# ─── Zoom (sesiones en vivo embebidas con el Meeting SDK) ─────────────────────
+# El miembro NO recibe un link de Zoom: el backend emite una firma de vida corta
+# (subscriptions/services/zoom.py) solo si tiene el plan activo y estamos dentro
+# de la franja horaria de la sesión. Credenciales desde marketplace.zoom.us → app
+# tipo "Meeting SDK" (SDK Key / SDK Secret). Funciona con cuenta Zoom GRATIS para
+# pruebas (límite de 40 min por reunión).
+ZOOM_SDK_KEY = env("ZOOM_SDK_KEY", default="")
+ZOOM_SDK_SECRET = env("ZOOM_SDK_SECRET", default="")
+# Minutos ANTES de live_start en que se abre el acceso a la sala.
+ZOOM_LIVE_OPEN_BEFORE_MIN = env.int("ZOOM_LIVE_OPEN_BEFORE_MIN", default=15)
+# Duración por defecto (min) si la sesión no define live_end.
+ZOOM_DEFAULT_DURATION_MIN = env.int("ZOOM_DEFAULT_DURATION_MIN", default=240)
+# Candado de "entrada única en vivo": segundos que dura la marca de presencia de
+# un miembro en una sesión Zoom. El frontend la renueva con un latido (~30s); si
+# expira sin latido (cerró la pestaña), otro dispositivo puede entrar.
+ZOOM_LIVE_LOCK_TTL = env.int("ZOOM_LIVE_LOCK_TTL", default=75)
+
+# Días que se conservan los cobros por link PENDIENTES (sin pagar) antes de
+# eliminarse solos. No afecta a los pagados/activos.
+PAYMENT_LINK_PENDING_TTL_DAYS = env.int("PAYMENT_LINK_PENDING_TTL_DAYS", default=7)
+
 # REST Framework
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -371,7 +392,7 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_THROTTLE_RATES": {
         "user": env("THROTTLE_USER", default="2000/hour"),
-        "anon": env("THROTTLE_ANON", default="120/hour"),
+        "anon": env("THROTTLE_ANON", default="600/hour"),
         "upload": env("THROTTLE_UPLOAD", default="60/hour"),
         "social": "30/hour",
         # Login (/api/auth/token/): protección contra credential stuffing y

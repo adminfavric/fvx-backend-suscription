@@ -84,7 +84,10 @@ class DashboardStatsAPIView(APIView):
     def get(self, request):
         from django.core.cache import cache
 
-        from ..shell.dashboard_stats import get_dashboard_stats
+        from ..shell.dashboard_stats import (
+            get_dashboard_breakdowns,
+            get_dashboard_stats,
+        )
 
         # KPIs agregados: caros de recomputar y casi idénticos por ventana.
         # TTL corto (60s) sin invalidación explícita — la frescura de ~1 min es
@@ -95,6 +98,7 @@ class DashboardStatsAPIView(APIView):
 
         data = {
             "items": get_dashboard_stats(),
+            **get_dashboard_breakdowns(),
             "generated_at": timezone.now().isoformat(),
         }
         cache.set("fvx:dashboard_stats", data, 60)

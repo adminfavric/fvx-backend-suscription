@@ -20,8 +20,11 @@ from rest_framework.views import APIView
 
 from api.permissions import IsAdminOrReadOnly
 
+import re
 import secrets
+from datetime import timedelta
 
+from django.core.cache import cache
 from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
@@ -42,6 +45,7 @@ from .serializers import (
     EventSerializer,
     LeadSerializer,
     MemberContentSerializer,
+    PaymentLinkSerializer,
     PlanSerializer,
     PublicEventSerializer,
     PublicMembershipSerializer,
@@ -55,7 +59,7 @@ from .services import (
     sync_plan_to_flow,
     sync_plan_to_paypal,
 )
-from .services import member_auth
+from .services import member_auth, zoom
 
 
 class PlanViewSet(viewsets.ModelViewSet):
@@ -153,6 +157,53 @@ class FlowCustomersListView(APIView):
         return Response(data)
 
 
+_PROVIDER_LABELS = {
+    PaymentProvider.FLOW: "Flow (tarjeta)",
+    PaymentProvider.PAYPAL: "PayPal",
+    PaymentProvider.FLOW_ONE_TIME: "Link de pago",
+    PaymentProvider.MANUAL: "Manual / transferencia",
+    PaymentProvider.IMPORTED: "Importado",
+}
+
+
+class AdminSubscriptionListView(APIView):
+    """
+    Lista GENÉRICA de suscripciones (todas las pasarelas) para el admin, desde el
+    espejo local ``CheckoutSession`` que unifica Flow, PayPal, link de pago y
+    manual. Muestra solo las ACTIVAS (``subscribed``) con su ``provider`` (origen),
+    plan, cliente, estado y vencimiento (para las de período).
+    """
+
+    permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
+
+    def get(self, request):
+        qs = (
+            CheckoutSession.objects.filter(status=CheckoutSession.Status.SUBSCRIBED)
+            .select_related("plan")
+            .order_by("-created")
+        )
+        rows = []
+        for cs in qs:
+            rows.append(
+                {
+                    "id": cs.id,
+                    "provider": cs.provider,
+                    "provider_label": _PROVIDER_LABELS.get(cs.provider, cs.provider),
+                    "plan_name": cs.plan.name if cs.plan_id else "—",
+                    "name": cs.name,
+                    "email": cs.email,
+                    "subscription_id": cs.subscription_id,
+                    "is_period": cs.is_period_based,
+                    "access_until": cs.access_until,
+                    # Para período: vigente si la fecha no venció. Para recurrente:
+                    # se asume activa (el detalle de Flow lo da la vista en vivo).
+                    "is_active": cs.has_period_access if cs.is_period_based else True,
+                    "created": cs.created,
+                }
+            )
+        return Response({"data": rows})
+
+
 class FlowSubscriptionsListView(APIView):
     """
     Suscripciones desde Flow (espejo de solo lectura para el admin). Flow exige
@@ -227,6 +278,7 @@ class PublicMembershipListView(generics.ListAPIView):
     serializer_class = PublicMembershipSerializer
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = []  # catálogo público de lectura: no consumir el cupo anon
     pagination_class = None
 
 
@@ -258,6 +310,7 @@ class PublicEventListView(generics.ListAPIView):
     serializer_class = PublicEventSerializer
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = []  # catálogo público de lectura: no consumir el cupo anon
     pagination_class = None
 
 
@@ -382,6 +435,254 @@ class ContentScheduleViewSet(viewsets.ModelViewSet):
     filterset_fields = ["plan", "content"]
     search_fields = ["content__title", "plan__name"]
     ordering_fields = ["starts_at", "ends_at", "created"]
+
+    @staticmethod
+    def _plan_ids(data) -> list:
+        """Lista de planes del payload: ``plans`` (múltiple) o ``plan`` (único)."""
+        plans = data.get("plans")
+        if plans:
+            return list(plans) if isinstance(plans, (list, tuple)) else [plans]
+        return [data["plan"]] if data.get("plan") else []
+
+    def create(self, request, *args, **kwargs):
+        """Crea UNA programación por cada membresía elegida (un contenido puede ir
+        a varios planes a la vez). Omite las que ya existen (unique content+plan)."""
+        data = request.data
+        content_id = data.get("content")
+        plan_ids = self._plan_ids(data)
+        if not content_id or not plan_ids:
+            return Response(
+                {"detail": "Elige el contenido y al menos una membresía."}, status=400
+            )
+        starts_at = data.get("starts_at") or timezone.localdate()
+        ends_at = data.get("ends_at") or None
+        created = []
+        for pid in plan_ids:
+            cs, _ = ContentSchedule.objects.get_or_create(
+                content_id=content_id, plan_id=pid,
+                defaults={"starts_at": starts_at, "ends_at": ends_at},
+            )
+            created.append(cs)
+        ser = self.get_serializer(created, many=True)
+        return Response(ser.data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        """Actualiza la fila (primer plan + fechas) y crea las extra si se eligieron
+        más membresías."""
+        instance = self.get_object()
+        data = request.data
+        plan_ids = self._plan_ids(data) or [instance.plan_id]
+        if data.get("content"):
+            instance.content_id = data["content"]
+        if data.get("starts_at"):
+            instance.starts_at = data["starts_at"]
+        instance.ends_at = data.get("ends_at") or None
+        instance.plan_id = plan_ids[0]
+        instance.save()
+        for pid in plan_ids[1:]:
+            ContentSchedule.objects.get_or_create(
+                content_id=instance.content_id, plan_id=pid,
+                defaults={"starts_at": instance.starts_at, "ends_at": instance.ends_at},
+            )
+        return Response(self.get_serializer(instance).data)
+
+
+def _add_months(d, months: int):
+    """Suma ``months`` meses a una fecha sin dependencias externas (ajusta el día
+    al último del mes si hiciera falta)."""
+    import calendar
+
+    m = d.month - 1 + months
+    year = d.year + m // 12
+    month = m % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return d.replace(year=year, month=month, day=day)
+
+
+def _settle_payment_link(token: str):
+    """Consulta el estado del pago del link en Flow y, si está pagado (status 2),
+    activa la membresía: ``subscribed`` + ``access_until = hoy + period_months``.
+    Compartido por el botón 'Verificar pago' y el webhook de confirmación."""
+    if not token:
+        return None
+    cs = CheckoutSession.objects.filter(
+        register_token=token, provider=PaymentProvider.FLOW_ONE_TIME
+    ).first()
+    if not cs:
+        return None
+    try:
+        st = get_flow_client().get_payment_status(token)
+    except FlowError:
+        return cs
+    if str(st.get("status")) == "2":  # 2 = pagada
+        cs.status = CheckoutSession.Status.SUBSCRIBED
+        cs.access_until = _add_months(timezone.localdate(), max(1, cs.period_months))
+        cs.save(update_fields=["status", "access_until", "modified"])
+    return cs
+
+
+def _create_flow_payment_link(plan, name: str, email: str, months: int) -> CheckoutSession:
+    """Crea un pago (link de pago) en Flow y su ``CheckoutSession`` por período
+    (pendiente). Devuelve la sesión. Lanza ``FlowError`` si Flow falla. Compartido
+    por el panel (admin) y el checkout público (autoservicio)."""
+    commerce_order = f"LINK-{plan.id}-{secrets.token_hex(5)}"
+    base = settings.PUBLIC_API_BASE_URL
+    pay = get_flow_client().create_payment(
+        commerceOrder=commerce_order,
+        subject=f"{plan.name} · {months} mes(es)",
+        amount=plan.amount,
+        currency=plan.currency or "CLP",
+        email=email,
+        urlConfirmation=f"{base}/api/v1/public/payment-link/confirm/",
+        urlReturn=f"{base}/api/v1/public/payment-link/return/",
+    )
+    return CheckoutSession.objects.create(
+        provider=PaymentProvider.FLOW_ONE_TIME,
+        plan=plan,
+        name=name,
+        email=email,
+        status=CheckoutSession.Status.PENDING_CARD,
+        register_token=pay.get("token") or None,
+        payment_url=f"{pay['url']}?token={pay['token']}",
+        period_months=months,
+    )
+
+
+class PaymentLinkViewSet(viewsets.ModelViewSet):
+    """
+    Cobros por LINK DE PAGO de Flow (admin). ``create`` genera un link en Flow
+    (pago único que habilita N meses) para enviar al cliente; ``verify`` consulta
+    el estado del pago y activa la membresía si ya pagó. Reemplaza la modalidad
+    manual/transferencia: el cliente paga con cualquier medio dentro de Flow.
+    """
+
+    serializer_class = PaymentLinkSerializer
+    permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
+    queryset = (
+        CheckoutSession.objects.filter(provider=PaymentProvider.FLOW_ONE_TIME)
+        .select_related("plan")
+        .order_by("-created")
+    )
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ["plan", "status"]
+    search_fields = ["email", "name"]
+    ordering_fields = ["created", "access_until", "email"]
+    # Solo se crea/lista/borra y se verifica; no edición directa del link.
+    http_method_names = ["get", "post", "delete", "head", "options"]
+
+    def create(self, request, *args, **kwargs):
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+        plan = data["plan"]
+        email = (data.get("email") or "").strip()
+        name = (data.get("name") or "").strip()
+        months = max(1, int(data.get("period_months", 1)))
+        if not plan.amount:
+            return Response(
+                {"detail": "El plan no tiene precio definido; no se puede cobrar."},
+                status=409,
+            )
+        try:
+            cs = _create_flow_payment_link(plan, name, email, months)
+        except FlowError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(self.get_serializer(cs).data, status=status.HTTP_201_CREATED)
+
+    def list(self, request, *args, **kwargs):
+        # Caducidad: elimina los cobros PENDIENTES (sin pagar) más antiguos que N
+        # días (no tocan los pagados/activos). Limpieza perezosa al abrir la lista.
+        days = getattr(settings, "PAYMENT_LINK_PENDING_TTL_DAYS", 7)
+        self.get_queryset().filter(
+            status=CheckoutSession.Status.PENDING_CARD,
+            created__lt=timezone.now() - timedelta(days=days),
+        ).delete()
+        return super().list(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        # No permitir borrar un cobro ya pagado/activo (es el registro de acceso).
+        if self.get_object().status == CheckoutSession.Status.SUBSCRIBED:
+            return Response(
+                {"detail": "No puedes eliminar un cobro ya pagado/activo."}, status=409
+            )
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=["post"])
+    def verify(self, request, pk=None):
+        """Consulta a Flow si el link ya fue pagado y activa el acceso si corresponde."""
+        cs = self.get_object()
+        if not cs.register_token:
+            return Response({"detail": "Este cobro no tiene token de Flow."}, status=409)
+        cs = _settle_payment_link(cs.register_token) or cs
+        return Response(
+            {**self.get_serializer(cs).data, "paid": cs.status == CheckoutSession.Status.SUBSCRIBED}
+        )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class PaymentLinkConfirmView(View):
+    """Webhook server-to-server de Flow (``urlConfirmation``). Activa el acceso al
+    pagar. Solo opera en prod / con URL pública; en local se usa 'Verificar pago'."""
+
+    def post(self, request):
+        _settle_payment_link(request.POST.get("token", ""))
+        return JsonResponse({"ok": True})
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class PaymentLinkReturnView(View):
+    """Retorno del navegador del cliente tras pagar el link: liquida y redirige al
+    sitio público con un parámetro de resultado."""
+
+    def get(self, request):
+        return self._handle(request)
+
+    def post(self, request):
+        return self._handle(request)
+
+    def _handle(self, request):
+        token = request.POST.get("token") or request.GET.get("token")
+        cs = _settle_payment_link(token)
+        ok = bool(cs and cs.status == CheckoutSession.Status.SUBSCRIBED)
+        return HttpResponseRedirect(
+            f"{settings.FRONTEND_BASE_URL}/acceso?pago={'ok' if ok else 'pendiente'}"
+        )
+
+
+class PaymentLinkStartView(APIView):
+    """
+    PÚBLICO (autoservicio del suscriptor): inicia un cobro por LINK DE PAGO de Flow
+    para un plan. El visitante completa nombre + correo en el checkout y elige
+    "pagar un mes / por transferencia"; aquí creamos el pago en Flow y devolvemos
+    la URL a la que se le redirige. Al volver del pago, ``PaymentLinkReturnView``
+    activa el acceso automáticamente (sin intervención del admin).
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        slug = (request.data.get("plan_slug") or "").strip()
+        name = (request.data.get("name") or "").strip()
+        email = (request.data.get("email") or "").strip()
+        try:
+            months = max(1, int(request.data.get("months", 1)))
+        except (TypeError, ValueError):
+            months = 1
+        if not (slug and name and email):
+            return Response({"detail": "plan_slug, name y email son requeridos."}, status=400)
+
+        plan = Plan.objects.filter(slug=slug, is_active=True).first()
+        if not plan:
+            return Response({"detail": "Membresía no encontrada."}, status=404)
+        if not plan.amount:
+            return Response({"detail": "Esta membresía no tiene precio definido aún."}, status=409)
+
+        try:
+            cs = _create_flow_payment_link(plan, name, email, months)
+        except FlowError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({"redirect_url": cs.payment_url})
 
 
 class FlowSubscriptionCancelView(APIView):
@@ -715,6 +1016,51 @@ class LeadViewSet(viewsets.ReadOnlyModelViewSet):
             lead.save(update_fields=[*changed, "modified"])
         return Response(self.get_serializer(lead).data)
 
+    @action(detail=True, methods=["post"])
+    def reply(self, request, pk=None):
+        """Envía un correo de respuesta al remitente del mensaje y lo marca como
+        respondido. Body: ``{subject?, body}``."""
+        from django.core.mail import EmailMultiAlternatives
+        from .services import member_auth as _ma
+
+        lead = self.get_object()
+        body = (request.data.get("body") or "").strip()
+        if not body:
+            return Response({"detail": "Escribe un mensaje para responder."}, status=400)
+        if not lead.email:
+            return Response({"detail": "Este mensaje no tiene un correo de destino."}, status=409)
+        subject = (request.data.get("subject") or "").strip() or f"Respuesta a tu mensaje · {_ma._SUBBRAND}"
+
+        html = f"""\
+<div style="background:{_ma._CREAM};padding:32px 12px;font-family:Arial,Helvetica,sans-serif;">
+  <table align="center" width="480" cellpadding="0" cellspacing="0" role="presentation"
+         style="max-width:480px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #eadfce;">
+    <tr><td bgcolor="{_ma._VIOLET}" style="background:{_ma._VIOLET};padding:24px 32px;text-align:center;">
+      <div style="color:{_ma._GOLD};font-size:11px;letter-spacing:3px;text-transform:uppercase;">{_ma._BRAND}</div>
+      <div style="color:#fff;font-size:20px;font-weight:bold;margin-top:6px;">{_ma._SUBBRAND}</div>
+    </td></tr>
+    <tr><td style="padding:30px 32px;color:#2a2333;font-size:15px;line-height:1.6;white-space:pre-line;">{body}</td></tr>
+    <tr><td bgcolor="#f4f0f8" style="background:#f4f0f8;padding:16px 32px;color:#9a93a8;font-size:12px;line-height:1.5;">
+      En respuesta a tu mensaje: "{(lead.message or lead.subject or '')[:140]}"
+    </td></tr>
+  </table>
+</div>"""
+        msg = EmailMultiAlternatives(
+            subject=subject, body=body, from_email=_ma._from_email(), to=[lead.email]
+        )
+        msg.attach_alternative(html, "text/html")
+        try:
+            msg.send(fail_silently=False)
+        except Exception:
+            return Response(
+                {"detail": "No se pudo enviar el correo. Revisa la configuración de email."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        lead.is_read = True
+        lead.is_replied = True
+        lead.save(update_fields=["is_read", "is_replied", "modified"])
+        return Response(self.get_serializer(lead).data)
+
 
 # ── Área de miembros (login sin contraseña + contenido por suscripción) ──────
 class MemberRequestCodeView(APIView):
@@ -758,7 +1104,61 @@ def _member_email(request) -> str | None:
     return member_auth.email_from_token(auth[7:].strip())
 
 
-class MemberContentView(APIView):
+def _member_identity(request) -> tuple[str | None, str | None]:
+    """Lee el Bearer token y devuelve ``(email, sid)`` del miembro. El ``sid``
+    distingue el login/dispositivo concreto (para el candado de entrada en vivo)."""
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None, None
+    return member_auth.identity_from_token(auth[7:].strip())
+
+
+def _zoom_live_key(email: str, content_id: int) -> str:
+    return f"zoomlive:{email}:{content_id}"
+
+
+def _member_active_plan_ids(email: str) -> list[int]:
+    """
+    Planes con suscripción ACTIVA del miembro, verificada EN VIVO contra la
+    pasarela correspondiente (Flow o PayPal según ``cs.provider``). Si la pasarela
+    no responde, cae al registro local para no bloquear a un miembro al día por una
+    caída puntual. Compartido por el contenido y la firma de Zoom.
+    """
+    active: set[int] = set()
+    sessions = CheckoutSession.objects.filter(
+        email__iexact=email, status=CheckoutSession.Status.SUBSCRIBED
+    )
+    for cs in sessions:
+        # Acceso por período (manual/importado/pago único): vale mientras
+        # access_until >= hoy. No se consulta ninguna pasarela.
+        if cs.is_period_based:
+            if cs.has_period_access:
+                active.add(cs.plan_id)
+            continue
+        # Recurrente (Flow/PayPal): se verifica en vivo contra la pasarela.
+        if not cs.subscription_id:
+            active.add(cs.plan_id)
+            continue
+        if _subscription_is_active(cs):
+            active.add(cs.plan_id)
+        # inactiva/cancelada → NO se agrega (sin acceso)
+    return list(active)
+
+
+class _MemberApiView(APIView):
+    """
+    Base de los endpoints del ÁREA DE MIEMBROS. Usan token propio (Bearer firmado,
+    no usuario Django) y quedan EXENTOS del throttle de DRF: el latido de la sala
+    Zoom (~cada 30s) y las recargas normales superarían el cupo ``anon`` (120/h)
+    y bloquearían al miembro. El anti-abuso real vive en request-code/verify-code.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = []
+
+
+class MemberContentView(_MemberApiView):
     """
     GET (Bearer token de miembro) → contenido de los planes a los que el miembro
     tiene una suscripción ACTIVA. El acceso se determina por las
@@ -774,7 +1174,7 @@ class MemberContentView(APIView):
         if not email:
             return Response({"detail": "No autenticado."}, status=401)
 
-        plan_ids = self._active_plan_ids(email)
+        plan_ids = _member_active_plan_ids(email)
         plans = Plan.objects.filter(id__in=plan_ids).values("slug", "name")
 
         # Biblioteca = contenido cuya PROGRAMACIÓN está vigente hoy en alguno de
@@ -799,29 +1199,174 @@ class MemberContentView(APIView):
             }
         )
 
-    def _active_plan_ids(self, email: str) -> list[int]:
-        """
-        Planes con suscripción ACTIVA del miembro, verificada EN VIVO contra la
-        pasarela correspondiente (Flow o PayPal según ``cs.provider``). Recorre las
-        ``CheckoutSession`` suscritas de ese email y consulta el estado real de
-        cada suscripción. Si la pasarela no responde, cae al registro local para no
-        bloquear a un miembro al día por una caída puntual.
-        """
-        active: set[int] = set()
-        sessions = CheckoutSession.objects.filter(
-            email__iexact=email, status=CheckoutSession.Status.SUBSCRIBED
+
+class MemberEmailCheckView(_MemberApiView):
+    """
+    PÚBLICO: indica si un correo YA tiene una membresía ACTIVA. Lo usa el checkout
+    para evitar que alguien se suscriba de nuevo con un correo ya registrado
+    (en su lugar, se le pide iniciar sesión / cambiar de plan).
+    """
+
+    def get(self, request):
+        email = (request.query_params.get("email") or "").strip()
+        if not email or "@" not in email:
+            return Response({"has_active": False})
+        return Response({"has_active": bool(_member_active_plan_ids(email))})
+
+
+class MemberPingView(_MemberApiView):
+    """GET (Bearer) → 200 si la sesión del miembro sigue vigente; 401 si fue
+    invalidada (p. ej. inició sesión en otro lugar — sesión única). Barato: no
+    consulta pasarelas. El frontend lo sondea para expulsar la sesión vieja."""
+
+    def get(self, request):
+        if not _member_email(request):
+            return Response({"detail": "Sesión no válida."}, status=401)
+        return Response({"ok": True})
+
+
+class MemberZoomSignatureView(_MemberApiView):
+    """
+    POST (Bearer) ``/public/member/content/<id>/zoom/`` → firma de vida corta para
+    unirse a la sesión Zoom EMBEBIDA (``/sala/:id`` en el frontend).
+
+    El acceso lo decide el servidor en el momento de entrar. Solo devuelve la firma
+    si TODO se cumple:
+      1. el miembro está autenticado (Bearer token);
+      2. el contenido es una sesión Zoom publicada;
+      3. está programado HOY en uno de los planes ACTIVOS del miembro (p. ej. Oro);
+      4. estamos dentro de la franja horaria (``live_start``/``live_end``).
+
+    El número de reunión y el passcode NUNCA se exponen como link reenviable:
+    viajan solo en esta respuesta, al miembro habilitado y dentro de la franja.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, content_id: int):
+        email, sid = _member_identity(request)
+        if not email:
+            return Response({"detail": "No autenticado."}, status=401)
+
+        try:
+            item = ContentItem.objects.get(
+                id=content_id, kind=ContentItem.Kind.ZOOM, is_published=True
+            )
+        except ContentItem.DoesNotExist:
+            return Response({"detail": "Sesión no encontrada."}, status=404)
+
+        # ¿El miembro tiene un plan activo donde este contenido está programado hoy?
+        plan_ids = _member_active_plan_ids(email)
+        today = timezone.localdate()
+        allowed = (
+            ContentSchedule.objects.filter(
+                content_id=item.id, plan_id__in=plan_ids, starts_at__lte=today
+            )
+            .filter(Q(ends_at__isnull=True) | Q(ends_at__gte=today))
+            .exists()
         )
-        for cs in sessions:
-            if not cs.subscription_id:
-                active.add(cs.plan_id)
-                continue
-            if _subscription_is_active(cs):
-                active.add(cs.plan_id)
-            # inactiva/cancelada → NO se agrega (sin acceso)
-        return list(active)
+        if not allowed:
+            return Response({"detail": "No tienes acceso a esta sesión."}, status=403)
+
+        if not item.zoom_meeting_number:
+            return Response(
+                {"detail": "La sesión aún no tiene una reunión Zoom configurada."},
+                status=409,
+            )
+
+        if not item.is_live_open():
+            return Response(
+                {
+                    "detail": "La sala todavía no está abierta.",
+                    "opens_at": item.live_opens_at,
+                    "closes_at": item.live_closes_at,
+                },
+                status=409,
+            )
+
+        # Candado de ENTRADA ÚNICA EN VIVO: si este correo ya está dentro de la
+        # sesión desde otro login/dispositivo (marca de presencia vigente con un
+        # ``sid`` distinto), se rechaza. Evita compartir la cuenta en simultáneo.
+        live_key = _zoom_live_key(email, item.id)
+        holder = cache.get(live_key)
+        if holder and holder != sid:
+            return Response(
+                {"detail": "Ya estás conectado a esta sesión en otro dispositivo."},
+                status=409,
+            )
+
+        # El SDK exige el número de reunión SOLO con dígitos (sin espacios/guiones
+        # como vienen al copiar "858 0229 1303"); si no, falla con length > 12.
+        meeting_number = re.sub(r"\D", "", item.zoom_meeting_number)
+
+        try:
+            sig = zoom.meeting_signature(meeting_number)
+        except zoom.ZoomConfigError:
+            return Response(
+                {"detail": "Zoom no está configurado en el servidor."}, status=503
+            )
+
+        # Tomamos la presencia para este login; el frontend la renueva con latidos.
+        cache.set(live_key, sid, getattr(settings, "ZOOM_LIVE_LOCK_TTL", 75))
+
+        return Response(
+            {
+                "signature": sig["signature"],
+                "sdkKey": sig["sdkKey"],
+                "meetingNumber": meeting_number,
+                "passcode": item.zoom_passcode.strip(),
+                "userName": email,
+                "userEmail": email,
+                "topic": item.title,
+            }
+        )
 
 
-class MemberAccountView(APIView):
+class MemberZoomHeartbeatView(_MemberApiView):
+    """
+    POST (Bearer) ``/public/member/content/<id>/zoom/heartbeat/`` → mantiene viva
+    la marca de presencia mientras el miembro está en la sala. Si otro
+    login/dispositivo tomó la sesión (``sid`` distinto), responde 409 para que
+    este cliente sea expulsado.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, content_id: int):
+        email, sid = _member_identity(request)
+        if not email:
+            return Response({"detail": "No autenticado."}, status=401)
+        live_key = _zoom_live_key(email, content_id)
+        holder = cache.get(live_key)
+        if holder and holder != sid:
+            return Response(
+                {"detail": "Tu sesión se abrió en otro dispositivo."}, status=409
+            )
+        cache.set(live_key, sid, getattr(settings, "ZOOM_LIVE_LOCK_TTL", 75))
+        return Response({"ok": True})
+
+
+class MemberZoomLeaveView(_MemberApiView):
+    """POST (Bearer) ``/public/member/content/<id>/zoom/leave/`` → libera la marca
+    de presencia al salir de la sala (si es de este login), para que el miembro
+    pueda reentrar de inmediato desde otro lado sin esperar a que expire el TTL."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, content_id: int):
+        email, sid = _member_identity(request)
+        if not email:
+            return Response({"detail": "No autenticado."}, status=401)
+        live_key = _zoom_live_key(email, content_id)
+        if cache.get(live_key) == sid:
+            cache.delete(live_key)
+        return Response({"ok": True})
+
+
+class MemberAccountView(_MemberApiView):
     """GET (Bearer) → suscripciones del miembro con estado real (Flow o PayPal
     según ``provider``) + método de pago. Base de la sección 'Mi suscripción'."""
 
@@ -837,17 +1382,22 @@ class MemberAccountView(APIView):
             CheckoutSession.objects.filter(
                 email__iexact=email, status=CheckoutSession.Status.SUBSCRIBED
             )
-            .exclude(subscription_id="")
             .select_related("plan")
             .order_by("-created")
         )
         for cs in sessions:
-            if cs.subscription_id in seen:
+            # Clave de deduplicado: la suscripción de la pasarela, o la fila local
+            # para las membresías por período (que no tienen subscription_id).
+            key = cs.subscription_id or f"period:{cs.id}"
+            if not cs.is_period_based and not cs.subscription_id:
+                continue  # recurrente sin id de pasarela: nada que mostrar
+            if key in seen:
                 continue
-            seen.add(cs.subscription_id)
+            seen.add(key)
             info = {
-                "subscription_id": cs.subscription_id,
+                "subscription_id": cs.subscription_id or f"manual-{cs.id}",
                 "provider": cs.provider,
+                "is_manual": cs.is_period_based,
                 "plan_name": cs.plan.name,
                 "plan_slug": cs.plan.slug,
                 "amount": cs.plan.amount,
@@ -859,12 +1409,21 @@ class MemberAccountView(APIView):
                 "cancel_at_period_end": None,
                 "card": None,
             }
-            if cs.provider == PaymentProvider.PAYPAL:
+            if cs.is_period_based:
+                self._fill_period(cs, info)
+            elif cs.provider == PaymentProvider.PAYPAL:
                 self._fill_paypal(cs, info)
             else:
                 self._fill_flow(cs, info)
             subs.append(info)
         return Response({"email": email, "subscriptions": subs})
+
+    @staticmethod
+    def _fill_period(cs, info: dict) -> None:
+        """Membresía por período (manual/importado/pago único): el estado y el
+        vencimiento salen de ``access_until`` local, sin consultar pasarela."""
+        info["status"] = 1 if cs.has_period_access else 0
+        info["period_end"] = cs.access_until.isoformat() if cs.access_until else None
 
     @staticmethod
     def _fill_flow(cs, info: dict) -> None:
@@ -896,7 +1455,7 @@ class MemberAccountView(APIView):
             pass
 
 
-class MemberCancelView(APIView):
+class MemberCancelView(_MemberApiView):
     """POST (Bearer) {subscription_id} → el miembro cancela su propia suscripción.
     En Flow se cancela al final del período; en PayPal el corte es inmediato (la
     API no expone 'al final del período'), pero PayPal no reembolsa lo ya pagado."""

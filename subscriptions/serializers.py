@@ -2,7 +2,15 @@
 
 from rest_framework import serializers
 
-from .models import ContentItem, ContentSchedule, Event, Lead, Plan
+from .models import (
+    CheckoutSession,
+    ContentItem,
+    ContentSchedule,
+    Event,
+    Lead,
+    PaymentProvider,
+    Plan,
+)
 
 
 class PlanSerializer(serializers.ModelSerializer):
@@ -92,7 +100,10 @@ class ContentItemSerializer(serializers.ModelSerializer):
         model = ContentItem
         fields = [
             "id", "title", "kind", "text", "file_url", "external_url",
-            "image_url", "order", "is_published", "created",
+            "image_url", "order", "is_published",
+            # Sesión en vivo (Zoom): número/passcode (solo servidor) + franja.
+            "zoom_meeting_number", "zoom_passcode", "live_start", "live_end",
+            "created",
         ]
         read_only_fields = ["id", "created"]
 
@@ -114,11 +125,78 @@ class ContentScheduleSerializer(serializers.ModelSerializer):
 
 
 class MemberContentSerializer(serializers.ModelSerializer):
-    """Pieza de la biblioteca del miembro (solo lectura)."""
+    """Pieza de la biblioteca del miembro (solo lectura).
+
+    Para las sesiones Zoom expone la franja horaria (``live_start``/``live_end``)
+    y dos banderas calculadas — ``has_zoom`` (tiene reunión configurada) y
+    ``live_open`` (se puede entrar ahora) — para que la UI muestre el estado y
+    habilite el botón "Entrar". NUNCA expone el número de reunión ni el passcode.
+    """
+
+    live_open = serializers.SerializerMethodField()
+    has_zoom = serializers.SerializerMethodField()
+    # Momentos exactos de apertura/cierre de la sala (incluyen el margen de 15 min
+    # antes). El frontend los usa para la cuenta regresiva en vivo.
+    opens_at = serializers.SerializerMethodField()
+    closes_at = serializers.SerializerMethodField()
 
     class Meta:
         model = ContentItem
-        fields = ["id", "title", "kind", "text", "file_url", "external_url", "image_url", "created"]
+        fields = [
+            "id", "title", "kind", "text", "file_url", "external_url", "image_url",
+            "created", "live_start", "live_end", "live_open", "has_zoom",
+            "opens_at", "closes_at",
+        ]
+
+    def get_live_open(self, obj: ContentItem) -> bool:
+        return obj.is_live_open() if obj.kind == ContentItem.Kind.ZOOM else False
+
+    def get_has_zoom(self, obj: ContentItem) -> bool:
+        return bool(obj.zoom_meeting_number) if obj.kind == ContentItem.Kind.ZOOM else False
+
+    def get_opens_at(self, obj: ContentItem):
+        return obj.live_opens_at if obj.kind == ContentItem.Kind.ZOOM else None
+
+    def get_closes_at(self, obj: ContentItem):
+        return obj.live_closes_at if obj.kind == ContentItem.Kind.ZOOM else None
+
+
+class PaymentLinkSerializer(serializers.ModelSerializer):
+    """
+    Cobro por LINK DE PAGO de Flow. El admin genera un link (pago único que
+    habilita ``period_months`` meses); se envía al cliente, que paga con cualquier
+    medio (tarjeta, débito, transferencia) dentro de Flow. Al confirmar el pago
+    (botón "Verificar pago"), la membresía pasa a ``subscribed`` y se fija
+    ``access_until = hoy + period_months``. Se guarda como ``CheckoutSession`` con
+    ``provider="flow_mensual"``.
+
+    Para CREAR solo se envían ``plan``, ``email``, ``name`` y ``months``; el resto
+    (token, URL del link, estado) lo completa la vista al llamar a Flow.
+    """
+
+    plan_name = serializers.CharField(source="plan.name", read_only=True)
+    is_active = serializers.SerializerMethodField()
+    is_paid = serializers.SerializerMethodField()
+    # Alias de entrada para los meses (el modelo usa ``period_months``).
+    months = serializers.IntegerField(source="period_months", required=False, min_value=1, default=1)
+
+    class Meta:
+        model = CheckoutSession
+        fields = [
+            "id", "plan", "plan_name", "name", "email", "months",
+            "access_until", "payment_url", "status", "provider",
+            "is_active", "is_paid", "created",
+        ]
+        read_only_fields = [
+            "id", "plan_name", "access_until", "payment_url", "status",
+            "provider", "is_active", "is_paid", "created",
+        ]
+
+    def get_is_active(self, obj: CheckoutSession) -> bool:
+        return obj.has_period_access and obj.status == CheckoutSession.Status.SUBSCRIBED
+
+    def get_is_paid(self, obj: CheckoutSession) -> bool:
+        return obj.status == CheckoutSession.Status.SUBSCRIBED
 
 
 class LeadSerializer(serializers.ModelSerializer):

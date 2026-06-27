@@ -15,6 +15,7 @@ See ``subscriptions/services/flow.py`` for the API client and
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
@@ -37,11 +38,28 @@ class PlanInterval(models.IntegerChoices):
 
 
 class PaymentProvider(models.TextChoices):
-    """Pasarela de pago que respalda una suscripción. Diferencia las
-    suscripciones de Flow (CLP, principal) de las de PayPal (USD, internacional)."""
+    """Origen/pasarela que respalda una suscripción.
 
-    FLOW = "flow", _("Flow")
-    PAYPAL = "paypal", _("PayPal")
+    - ``FLOW`` / ``PAYPAL``: cobro AUTOMÁTICO recurrente (el acceso se verifica en
+      vivo contra la pasarela).
+    - ``MANUAL`` / ``IMPORTED`` / ``FLOW_ONE_TIME``: acceso POR PERÍODO (sin cobro
+      automático). Valen mientras ``access_until >= hoy``; se renuevan extendiendo
+      esa fecha al confirmar cada pago. Ver ``PERIOD_PROVIDERS``.
+    """
+
+    FLOW = "flow", _("Flow (tarjeta, recurrente)")
+    PAYPAL = "paypal", _("PayPal (recurrente)")
+    MANUAL = "manual", _("Manual / transferencia")
+    IMPORTED = "imported", _("Importado")
+    FLOW_ONE_TIME = "flow_mensual", _("Flow mensual (pago único)")
+
+
+# Proveedores cuyo acceso se rige por ``access_until`` (no por la pasarela en vivo).
+PERIOD_PROVIDERS = (
+    PaymentProvider.MANUAL,
+    PaymentProvider.IMPORTED,
+    PaymentProvider.FLOW_ONE_TIME,
+)
 
 
 # PayPal billing-cycle ``interval_unit`` por cada ``PlanInterval`` de Flow.
@@ -281,6 +299,27 @@ class CheckoutSession(TimeStampedModel):
     subscription_id = models.CharField(_("subscription id"), max_length=120, blank=True)
     error = models.TextField(_("error"), blank=True)
 
+    # ── Acceso por período (manual / importado / pago único) ──────────────
+    # Para proveedores sin cobro automático, el acceso vale mientras
+    # ``access_until >= hoy``. Vacío = sin fecha (no da acceso por sí solo).
+    access_until = models.DateField(
+        _("access until"), null=True, blank=True,
+        help_text=_("Acceso válido hasta esta fecha (membresías por período: manual/transferencia/importado)."),
+    )
+    origin_note = models.CharField(
+        _("origin / note"), max_length=255, blank=True,
+        help_text=_("De dónde viene el alta o referencia del pago (transferencia, comprobante, plataforma origen)."),
+    )
+    # ── Link de pago de Flow (cobro por link, pago único que habilita N meses) ──
+    period_months = models.PositiveIntegerField(
+        _("period months"), default=1,
+        help_text=_("Meses de acceso que habilita el pago del link (se suman a access_until al confirmar)."),
+    )
+    payment_url = models.CharField(
+        _("payment URL"), max_length=600, blank=True,
+        help_text=_("Link de pago de Flow generado para enviar al cliente."),
+    )
+
     class Meta:
         verbose_name = _("checkout session")
         verbose_name_plural = _("checkout sessions")
@@ -288,6 +327,16 @@ class CheckoutSession(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"[{self.provider}] {self.email} → {self.plan_id} ({self.status})"
+
+    @property
+    def is_period_based(self) -> bool:
+        """True si el acceso se rige por ``access_until`` (no por la pasarela)."""
+        return self.provider in PERIOD_PROVIDERS
+
+    @property
+    def has_period_access(self) -> bool:
+        """True si es por período y la fecha de acceso sigue vigente hoy."""
+        return bool(self.access_until and self.access_until >= timezone.localdate())
 
 
 class ContentItem(TimeStampedModel):
@@ -317,6 +366,29 @@ class ContentItem(TimeStampedModel):
     order = models.PositiveIntegerField(_("display order"), default=0)
     is_published = models.BooleanField(_("published"), default=True, help_text=_("Si está desactivado, no se muestra a los miembros."))
 
+    # ── Sesión en vivo (Zoom) — solo para kind == ZOOM ────────────────────
+    # El embed se gestiona con el Meeting SDK de Zoom: el número de la reunión y
+    # el passcode viven SOLO en el servidor y NUNCA se envían al miembro como un
+    # link. El backend entrega una firma de vida corta (ver services/zoom.py)
+    # únicamente si el miembro tiene el plan activo y estamos dentro de la franja
+    # horaria. Así no hay un enlace reenviable y el acceso lo decide el servidor.
+    zoom_meeting_number = models.CharField(
+        _("Zoom meeting number"), max_length=64, blank=True,
+        help_text=_("ID numérico de la reunión Zoom (Meeting ID, sin espacios). Solo tipo 'zoom'."),
+    )
+    zoom_passcode = models.CharField(
+        _("Zoom passcode"), max_length=64, blank=True,
+        help_text=_("Clave de la reunión. Se guarda solo en el servidor; el miembro nunca ve el link."),
+    )
+    live_start = models.DateTimeField(
+        _("live start"), null=True, blank=True,
+        help_text=_("Inicio de la sesión en vivo. El acceso se abre unos minutos antes."),
+    )
+    live_end = models.DateTimeField(
+        _("live end"), null=True, blank=True,
+        help_text=_("Fin de la sesión. Vacío = se usa una duración por defecto desde el inicio."),
+    )
+
     class Meta:
         verbose_name = _("content item")
         verbose_name_plural = _("content items")
@@ -324,6 +396,38 @@ class ContentItem(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.title} ({self.get_kind_display()})"
+
+    # ── Franja de acceso a la sala en vivo ────────────────────────────────
+    @property
+    def live_opens_at(self):
+        """Momento en que se habilita el acceso (unos minutos antes del inicio).
+        ``None`` si la sesión no tiene hora de inicio (acceso siempre abierto)."""
+        if not self.live_start:
+            return None
+        early = getattr(settings, "ZOOM_LIVE_OPEN_BEFORE_MIN", 15)
+        return self.live_start - timedelta(minutes=early)
+
+    @property
+    def live_closes_at(self):
+        """Momento en que se cierra el acceso. Usa ``live_end`` o, si está vacío,
+        ``live_start`` + duración por defecto. ``None`` si no hay hora de inicio."""
+        if self.live_end:
+            return self.live_end
+        if not self.live_start:
+            return None
+        dur = getattr(settings, "ZOOM_DEFAULT_DURATION_MIN", 240)
+        return self.live_start + timedelta(minutes=dur)
+
+    def is_live_open(self, now=None) -> bool:
+        """True si AHORA el miembro puede entrar a la sala (dentro de la franja).
+        Sin ``live_start`` se considera siempre abierta (mientras esté programada)."""
+        now = now or timezone.now()
+        opens, closes = self.live_opens_at, self.live_closes_at
+        if opens and now < opens:
+            return False
+        if closes and now > closes:
+            return False
+        return True
 
 
 class ContentSchedule(TimeStampedModel):
