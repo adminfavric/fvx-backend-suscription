@@ -466,25 +466,9 @@ class ContentScheduleViewSet(viewsets.ModelViewSet):
         ser = self.get_serializer(created, many=True)
         return Response(ser.data, status=status.HTTP_201_CREATED)
 
-    def update(self, request, *args, **kwargs):
-        """Actualiza la fila (primer plan + fechas) y crea las extra si se eligieron
-        más membresías."""
-        instance = self.get_object()
-        data = request.data
-        plan_ids = self._plan_ids(data) or [instance.plan_id]
-        if data.get("content"):
-            instance.content_id = data["content"]
-        if data.get("starts_at"):
-            instance.starts_at = data["starts_at"]
-        instance.ends_at = data.get("ends_at") or None
-        instance.plan_id = plan_ids[0]
-        instance.save()
-        for pid in plan_ids[1:]:
-            ContentSchedule.objects.get_or_create(
-                content_id=instance.content_id, plan_id=pid,
-                defaults={"starts_at": instance.starts_at, "ends_at": instance.ends_at},
-            )
-        return Response(self.get_serializer(instance).data)
+    # La EDICIÓN usa el flujo estándar del serializer: una fila = un plan. El
+    # serializer valida unique_together (content, plan) y devuelve 400 si ya
+    # existe, en vez de reventar con 500. El multi-plan solo aplica al crear.
 
 
 def _add_months(d, months: int):
