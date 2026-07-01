@@ -139,14 +139,21 @@ class MemberContentSerializer(serializers.ModelSerializer):
     # antes). El frontend los usa para la cuenta regresiva en vivo.
     opens_at = serializers.SerializerMethodField()
     closes_at = serializers.SerializerMethodField()
+    # NUNCA se expone la URL permanente del archivo: el miembro pide una URL
+    # FIRMADA de vida corta al endpoint ``/content/<id>/media/`` cuando reproduce.
+    # Aquí solo va una bandera de si hay archivo, para que la UI sepa qué mostrar.
+    has_file = serializers.SerializerMethodField()
 
     class Meta:
         model = ContentItem
         fields = [
-            "id", "title", "kind", "text", "file_url", "external_url", "image_url",
+            "id", "title", "kind", "text", "external_url", "image_url",
             "created", "live_start", "live_end", "live_open", "has_zoom",
-            "opens_at", "closes_at",
+            "opens_at", "closes_at", "has_file",
         ]
+
+    def get_has_file(self, obj: ContentItem) -> bool:
+        return bool(obj.file_url)
 
     def get_live_open(self, obj: ContentItem) -> bool:
         return obj.is_live_open() if obj.kind == ContentItem.Kind.ZOOM else False

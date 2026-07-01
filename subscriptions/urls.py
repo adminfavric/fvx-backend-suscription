@@ -4,6 +4,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    AdminBroadcastView,
     AdminSubscriptionListView,
     CheckoutReturnView,
     CheckoutStartView,
@@ -27,6 +28,7 @@ from .views import (
     MemberCancelView,
     MemberContentView,
     MemberEmailCheckView,
+    MemberMediaUrlView,
     MemberPingView,
     MemberRequestCodeView,
     MemberVerifyCodeView,
@@ -55,6 +57,7 @@ urlpatterns = [
     path("customers/", FlowCustomersListView.as_view(), name="flow-customers"),
     path("subscriptions/", FlowSubscriptionsListView.as_view(), name="flow-subscriptions"),
     path("subscriptions/all/", AdminSubscriptionListView.as_view(), name="subscriptions-all"),
+    path("broadcast/", AdminBroadcastView.as_view(), name="admin-broadcast"),
     path("subscriptions/cancel/", FlowSubscriptionCancelView.as_view(), name="flow-subscription-cancel"),
     path("subscriptions/reactivate/", FlowSubscriptionReactivateView.as_view(), name="flow-subscription-reactivate"),
     path("public/memberships/", PublicMembershipListView.as_view(), name="public-memberships"),
@@ -80,6 +83,7 @@ urlpatterns = [
     path("public/member/check-email/", MemberEmailCheckView.as_view(), name="member-check-email"),
     path("public/member/ping/", MemberPingView.as_view(), name="member-ping"),
     path("public/member/content/", MemberContentView.as_view(), name="member-content"),
+    path("public/member/content/<int:content_id>/media/", MemberMediaUrlView.as_view(), name="member-media-url"),
     path("public/member/content/<int:content_id>/zoom/", MemberZoomSignatureView.as_view(), name="member-zoom-signature"),
     path("public/member/content/<int:content_id>/zoom/heartbeat/", MemberZoomHeartbeatView.as_view(), name="member-zoom-heartbeat"),
     path("public/member/content/<int:content_id>/zoom/leave/", MemberZoomLeaveView.as_view(), name="member-zoom-leave"),

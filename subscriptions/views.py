@@ -204,6 +204,62 @@ class AdminSubscriptionListView(APIView):
         return Response({"data": rows})
 
 
+class AdminBroadcastView(APIView):
+    """
+    Correos masivos a miembros (panel admin).
+
+    GET  → lista de planes con su nº de miembros ACTIVOS + total, para elegir a
+           quién enviar.
+    POST → envía el correo. Body ``{plan_ids?: [int], subject, html, test_to?}``:
+           · ``plan_ids`` vacío = todos los miembros activos.
+           · ``test_to`` = enviar SOLO una prueba a esa dirección (no dispara el
+             envío masivo). Útil para revisar cómo se ve antes de mandarlo a todos.
+    """
+
+    permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
+
+    def get(self, request):
+        from .services.broadcast import active_member_emails
+
+        plans = Plan.objects.filter(is_active=True).order_by("order", "name")
+        data = [
+            {"id": p.id, "name": p.name, "count": len(active_member_emails([p.id]))}
+            for p in plans
+        ]
+        return Response({"plans": data, "total_active": len(active_member_emails())})
+
+    def post(self, request):
+        from .services.broadcast import active_member_emails, send_broadcast
+
+        subject = (request.data.get("subject") or "").strip()
+        html = (request.data.get("html") or "").strip()
+        plan_ids = request.data.get("plan_ids") or []
+        test_to = (request.data.get("test_to") or "").strip()
+
+        if not subject or not html:
+            return Response(
+                {"detail": "El asunto y el contenido son obligatorios."}, status=400
+            )
+
+        # Prueba: se envía solo a la dirección indicada, sin tocar a los miembros.
+        if test_to:
+            sent = send_broadcast(subject, html, [test_to])
+            return Response({"sent": sent, "test": True})
+
+        try:
+            ids = [int(x) for x in plan_ids]
+        except (TypeError, ValueError):
+            return Response({"detail": "Planes inválidos."}, status=400)
+
+        recipients = active_member_emails(ids if ids else None)
+        if not recipients:
+            return Response(
+                {"detail": "No hay miembros activos para ese criterio."}, status=400
+            )
+        sent = send_broadcast(subject, html, recipients)
+        return Response({"sent": sent, "recipients": len(recipients)})
+
+
 class FlowSubscriptionsListView(APIView):
     """
     Suscripciones desde Flow (espejo de solo lectura para el admin). Flow exige
@@ -1182,6 +1238,47 @@ class MemberContentView(_MemberApiView):
                 "content": MemberContentSerializer(items, many=True).data,
             }
         )
+
+
+class MemberMediaUrlView(_MemberApiView):
+    """
+    GET (Bearer) ``/public/member/content/<id>/media/`` → URL FIRMADA de vida
+    corta para reproducir/ver el archivo (video/audio/imagen).
+
+    El servidor valida que el contenido esté programado HOY en un plan ACTIVO del
+    miembro y luego firma la URL (caduca en minutos). Así el archivo nunca se sirve
+    con su URL permanente: copiarla desde DevTools deja de funcionar al expirar →
+    no se puede compartir ni "robar" el link para verlo fuera de la plataforma.
+    """
+
+    def get(self, request, content_id: int):
+        email = _member_email(request)
+        if not email:
+            return Response({"detail": "No autenticado."}, status=401)
+
+        try:
+            item = ContentItem.objects.get(id=content_id, is_published=True)
+        except ContentItem.DoesNotExist:
+            return Response({"detail": "Contenido no encontrado."}, status=404)
+
+        plan_ids = _member_active_plan_ids(email)
+        today = timezone.localdate()
+        allowed = (
+            ContentSchedule.objects.filter(
+                content_id=item.id, plan_id__in=plan_ids, starts_at__lte=today
+            )
+            .filter(Q(ends_at__isnull=True) | Q(ends_at__gte=today))
+            .exists()
+        )
+        if not allowed:
+            return Response({"detail": "No tienes acceso a este contenido."}, status=403)
+
+        if not item.file_url:
+            return Response({"detail": "Este contenido no tiene archivo."}, status=409)
+
+        from .services.media import signed_media_url
+
+        return Response({"url": signed_media_url(item.file_url)})
 
 
 class MemberEmailCheckView(_MemberApiView):
