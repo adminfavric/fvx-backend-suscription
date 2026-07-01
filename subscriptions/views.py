@@ -1110,9 +1110,37 @@ class MemberRequestCodeView(APIView):
     authentication_classes = []
 
     def post(self, request):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from django.core.validators import validate_email
+
         email = (request.data.get("email") or "").strip()
         if not email:
             return Response({"detail": "Email requerido."}, status=400)
+
+        # 1) Formato válido (sintaxis del correo).
+        try:
+            validate_email(email)
+        except DjangoValidationError:
+            return Response({"detail": "El correo no tiene un formato válido."}, status=400)
+
+        # 2) Debe ser un MIEMBRO (tiene una suscripción registrada). Así una
+        # persona ajena no recibe códigos y se le aclara que ese correo no está
+        # suscrito, en vez de mandarle un código que no le sirve.
+        is_member = CheckoutSession.objects.filter(
+            email__iexact=email, status=CheckoutSession.Status.SUBSCRIBED
+        ).exists()
+        if not is_member:
+            return Response(
+                {
+                    "detail": (
+                        "No encontramos una suscripción con ese correo. Si te "
+                        "suscribiste con otro correo, úsalo; o suscríbete para acceder."
+                    ),
+                    "not_member": True,
+                },
+                status=404,
+            )
+
         try:
             member_auth.request_code(email)
         except Exception:  # noqa: BLE001 — no filtrar detalles del email al cliente
