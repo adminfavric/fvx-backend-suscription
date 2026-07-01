@@ -218,21 +218,31 @@ MEDIA_ROOT = BASE_DIR / "media"
 # ──────────────────────────────────────────────────────────────────────────────
 STORAGE_BACKEND = env("STORAGE_BACKEND", default="local").lower()
 
-# Tamaño máximo aceptado en el endpoint de upload (bytes). 25 MB por defecto.
-# Para archivos > 100 MB conviene además subir el límite de nginx / gunicorn.
-UPLOAD_MAX_BYTES = env.int("UPLOAD_MAX_BYTES", default=25 * 1024 * 1024)
+# Tamaño máximo aceptado en el endpoint de upload (bytes). 500 MB por defecto
+# (plataforma de contenido: videos/audios de las membresías). Para archivos
+# grandes conviene además subir el límite de nginx (``client_max_body_size``) y
+# el ``--timeout`` de gunicorn en el VPS. Ajustable por env ``UPLOAD_MAX_BYTES``.
+UPLOAD_MAX_BYTES = env.int("UPLOAD_MAX_BYTES", default=500 * 1024 * 1024)
 
 # Allow-list de subida. Con STORAGE_BACKEND=s3/gcs las URLs devueltas son
 # públicas en el mismo origen lógico de la marca: aceptar .html/.svg/.js
 # permitiría XSS almacenado / phishing. Por eso el default NO incluye svg ni
-# tipos ejecutables; un proyecto que necesite más los añade vía .env.
+# tipos ejecutables. Incluye imágenes, documentos y MEDIA (video/audio), que es
+# el contenido de las membresías. Ampliable/restringible vía .env.
 # La extensión es el control duro; el content-type declarado se valida si
 # viene (es spoofeable — sniffing por magic-bytes queda como hardening futuro).
 UPLOAD_ALLOWED_EXTENSIONS = [
     e.lower().lstrip(".")
     for e in env.list(
         "UPLOAD_ALLOWED_EXTENSIONS",
-        default=["jpg", "jpeg", "png", "gif", "webp", "pdf"],
+        default=[
+            # Imágenes / documentos
+            "jpg", "jpeg", "png", "gif", "webp", "pdf",
+            # Video
+            "mp4", "webm", "mov", "m4v", "ogv", "mkv",
+            # Audio
+            "mp3", "m4a", "wav", "ogg", "oga", "aac", "flac",
+        ],
     )
 ]
 UPLOAD_ALLOWED_CONTENT_TYPES = env.list(
@@ -243,6 +253,23 @@ UPLOAD_ALLOWED_CONTENT_TYPES = env.list(
         "image/gif",
         "image/webp",
         "application/pdf",
+        # Video
+        "video/mp4",
+        "video/webm",
+        "video/quicktime",
+        "video/x-matroska",
+        "video/ogg",
+        # Audio
+        "audio/mpeg",
+        "audio/mp4",
+        "audio/x-m4a",
+        "audio/wav",
+        "audio/x-wav",
+        "audio/ogg",
+        "audio/aac",
+        "audio/flac",
+        # Algunos navegadores mandan octet-stream para .mov/.mkv grandes.
+        "application/octet-stream",
     ],
 )
 
