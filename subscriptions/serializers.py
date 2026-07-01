@@ -4,6 +4,7 @@ from rest_framework import serializers
 
 from .models import (
     CheckoutSession,
+    CompMembership,
     ContentItem,
     ContentSchedule,
     Event,
@@ -166,6 +167,24 @@ class MemberContentSerializer(serializers.ModelSerializer):
 
     def get_closes_at(self, obj: ContentItem):
         return obj.live_closes_at if obj.kind == ContentItem.Kind.ZOOM else None
+
+
+class CompMembershipSerializer(serializers.ModelSerializer):
+    """Acceso de cortesía/staff (CRUD admin). ``plans`` recibe/lista IDs de plan;
+    ``plan_names`` es solo lectura para mostrarlos en la tabla."""
+
+    plan_names = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CompMembership
+        fields = [
+            "id", "email", "full_name", "all_plans", "plans", "plan_names",
+            "is_active", "note", "created",
+        ]
+        read_only_fields = ["id", "plan_names", "created"]
+
+    def get_plan_names(self, obj) -> str:
+        return ", ".join(obj.plans.values_list("name", flat=True)) or ("Todas" if obj.all_plans else "—")
 
 
 class PaymentLinkSerializer(serializers.ModelSerializer):

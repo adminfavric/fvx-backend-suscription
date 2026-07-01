@@ -8,6 +8,7 @@ from .views import (
     AdminSubscriptionListView,
     CheckoutReturnView,
     CheckoutStartView,
+    CompMembershipViewSet,
     ContentItemViewSet,
     ContentScheduleViewSet,
     EventCheckoutView,
@@ -49,6 +50,7 @@ router.register(r"plans", PlanViewSet, basename="plan")
 router.register(r"events", EventViewSet, basename="event")
 router.register(r"content-items", ContentItemViewSet, basename="content-item")
 router.register(r"content-schedules", ContentScheduleViewSet, basename="content-schedule")
+router.register(r"comp-memberships", CompMembershipViewSet, basename="comp-membership")
 router.register(r"payment-links", PaymentLinkViewSet, basename="payment-link")
 router.register(r"leads", LeadViewSet, basename="lead")
 

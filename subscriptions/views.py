@@ -41,6 +41,7 @@ from .models import (
     Plan,
 )
 from .serializers import (
+    CompMembershipSerializer,
     ContentItemSerializer,
     ContentScheduleSerializer,
     EventSerializer,
@@ -480,6 +481,19 @@ class ContentItemViewSet(viewsets.ModelViewSet):
     filterset_fields = ["kind", "is_published"]
     search_fields = ["title", "text"]
     ordering_fields = ["title", "order", "created"]
+
+
+class CompMembershipViewSet(viewsets.ModelViewSet):
+    """CRUD admin de los accesos de CORTESÍA/STAFF (ven el contenido sin
+    suscripción real). No toca ``CheckoutSession`` ni las métricas."""
+
+    queryset = CompMembership.objects.prefetch_related("plans").all()
+    serializer_class = CompMembershipSerializer
+    permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ["is_active", "all_plans"]
+    search_fields = ["email", "full_name", "note"]
+    ordering_fields = ["email", "created"]
 
 
 class ContentScheduleViewSet(viewsets.ModelViewSet):
@@ -1317,12 +1331,17 @@ class MemberMediaUrlView(_MemberApiView):
         if not allowed:
             return Response({"detail": "No tienes acceso a este contenido."}, status=403)
 
-        if not item.file_url:
-            return Response({"detail": "Este contenido no tiene archivo."}, status=409)
+        # Archivo subido → URL firmada de vida corta (anti-robo). Si no hay
+        # archivo pero sí un enlace externo (YouTube/Vimeo/MP4), se devuelve tal
+        # cual: es contenido ya público en su origen, no hay nada que firmar.
+        if item.file_url:
+            from .services.media import signed_media_url
 
-        from .services.media import signed_media_url
+            return Response({"url": signed_media_url(item.file_url), "external": False})
+        if item.external_url:
+            return Response({"url": item.external_url, "external": True})
 
-        return Response({"url": signed_media_url(item.file_url)})
+        return Response({"detail": "Este contenido no tiene archivo."}, status=409)
 
 
 class MemberEmailCheckView(_MemberApiView):
