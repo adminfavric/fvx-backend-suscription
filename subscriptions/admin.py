@@ -3,7 +3,7 @@
 from django.contrib import admin, messages
 from django.utils.translation import gettext_lazy as _
 
-from .models import CheckoutSession, ContentItem, ContentSchedule, Event, EventOrder, Lead, Plan
+from .models import CheckoutSession, CompMembership, ContentItem, ContentSchedule, Event, EventOrder, Lead, Plan
 from .services import (
     FlowError,
     PayPalError,
@@ -204,3 +204,14 @@ class LeadAdmin(admin.ModelAdmin):
     search_fields = ["email", "name", "subject", "message"]
     ordering = ["-created"]
     readonly_fields = [f.name for f in Lead._meta.fields]
+
+
+@admin.register(CompMembership)
+class CompMembershipAdmin(admin.ModelAdmin):
+    """Accesos de cortesía / staff (ven el contenido sin suscripción real)."""
+
+    list_display = ["email", "full_name", "all_plans", "is_active", "note", "created"]
+    list_filter = ["is_active", "all_plans"]
+    search_fields = ["email", "full_name", "note"]
+    filter_horizontal = ["plans"]
+    ordering = ["email"]

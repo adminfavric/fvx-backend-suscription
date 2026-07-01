@@ -453,6 +453,46 @@ class ContentSchedule(TimeStampedModel):
         return f"{self.content_id} → {self.plan_id}"
 
 
+class CompMembership(TimeStampedModel):
+    """
+    Acceso de **cortesía / staff**: un correo que puede entrar al área de miembros
+    y ver el contenido de las membresías **sin** una suscripción real.
+
+    Vive aparte de ``CheckoutSession``: NO cuenta como suscripción, no aparece en
+    ``/admin/subscriptions`` ni en las métricas del dashboard, y no se cobra. Se
+    gestiona desde el admin de Django. Útil para el equipo, invitados o pruebas.
+    """
+
+    email = models.EmailField(_("email"), unique=True)
+    full_name = models.CharField(_("full name"), max_length=255, blank=True)
+    all_plans = models.BooleanField(
+        _("all plans"), default=True,
+        help_text=_("Acceso a TODAS las membresías activas. Desmárcalo para limitar a planes concretos."),
+    )
+    plans = models.ManyToManyField(
+        "Plan", blank=True, related_name="comp_members",
+        help_text=_("Si 'all plans' está desmarcado, solo estas membresías."),
+    )
+    is_active = models.BooleanField(_("active"), default=True)
+    note = models.CharField(_("note"), max_length=255, blank=True)
+
+    class Meta:
+        verbose_name = _("complimentary access")
+        verbose_name_plural = _("complimentary access")
+        ordering = ["email"]
+
+    def __str__(self) -> str:
+        return f"{self.email} (cortesía)"
+
+    def plan_ids(self) -> list[int]:
+        """IDs de planes a los que da acceso (vacío si está inactivo)."""
+        if not self.is_active:
+            return []
+        if self.all_plans:
+            return list(Plan.objects.filter(is_active=True).values_list("id", flat=True))
+        return list(self.plans.values_list("id", flat=True))
+
+
 class Event(BaseModelGeneric, TimeStampedModel):
     """
     Evento especial de **compra única** (estilo Tiendup): talleres, encuentros.

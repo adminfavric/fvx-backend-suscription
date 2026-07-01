@@ -31,6 +31,7 @@ from django.utils import timezone
 
 from .models import (
     CheckoutSession,
+    CompMembership,
     ContentItem,
     ContentSchedule,
     Event,
@@ -1123,13 +1124,14 @@ class MemberRequestCodeView(APIView):
         except DjangoValidationError:
             return Response({"detail": "El correo no tiene un formato válido."}, status=400)
 
-        # 2) Debe ser un MIEMBRO (tiene una suscripción registrada). Así una
-        # persona ajena no recibe códigos y se le aclara que ese correo no está
-        # suscrito, en vez de mandarle un código que no le sirve.
+        # 2) Debe ser un MIEMBRO (suscripción registrada) o un acceso de CORTESÍA
+        # (CompMembership). Así una persona ajena no recibe códigos y se le aclara
+        # que ese correo no está suscrito, en vez de mandarle un código inútil.
         is_member = CheckoutSession.objects.filter(
             email__iexact=email, status=CheckoutSession.Status.SUBSCRIBED
         ).exists()
-        if not is_member:
+        is_comp = CompMembership.objects.filter(email__iexact=email, is_active=True).exists()
+        if not (is_member or is_comp):
             return Response(
                 {
                     "detail": (
@@ -1185,14 +1187,28 @@ def _zoom_live_key(email: str, content_id: int) -> str:
     return f"zoomlive:{email}:{content_id}"
 
 
+def _comp_plan_ids(email: str) -> list[int]:
+    """Planes de un acceso de CORTESÍA/STAFF (``CompMembership``) activo para ese
+    correo. Vacío si no hay acceso de cortesía. NO cuenta como suscripción."""
+    try:
+        comp = CompMembership.objects.get(email__iexact=email.strip(), is_active=True)
+    except CompMembership.DoesNotExist:
+        return []
+    return comp.plan_ids()
+
+
 def _member_active_plan_ids(email: str) -> list[int]:
     """
     Planes con suscripción ACTIVA del miembro, verificada EN VIVO contra la
     pasarela correspondiente (Flow o PayPal según ``cs.provider``). Si la pasarela
     no responde, cae al registro local para no bloquear a un miembro al día por una
     caída puntual. Compartido por el contenido y la firma de Zoom.
+
+    Incluye además los planes de un acceso de CORTESÍA/STAFF (``CompMembership``)
+    si el correo tiene uno activo — así el equipo/invitados ven el contenido sin
+    una suscripción real.
     """
-    active: set[int] = set()
+    active: set[int] = set(_comp_plan_ids(email))
     sessions = CheckoutSession.objects.filter(
         email__iexact=email, status=CheckoutSession.Status.SUBSCRIBED
     )
