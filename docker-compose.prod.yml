@@ -19,5 +19,7 @@ services:
       - 0.0.0.0:8080
       - --workers
       - '3'
+      # Timeout alto: las subidas de video (hasta ~1 GB) pueden tardar varios
+      # minutos; con 120s el worker mataba la petición a mitad de subida.
       - --timeout
-      - '120'
+      - '600'
