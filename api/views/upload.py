@@ -134,14 +134,21 @@ class SignedUrlUploadView(APIView):
             mb = limit // (1024 * 1024)
             return Response({"detail": f"El archivo supera el máximo de {mb} MB."}, status=400)
 
-        # Key: <AWS_LOCATION>/<path_prefix>/<aleatorio>-<nombre>. El sufijo evita
-        # que dos archivos con el mismo nombre se pisen (no hay chequeo de colisión
-        # en la subida directa).
-        location = (getattr(settings, "AWS_LOCATION", "") or "").strip("/")
+        # Bucket destino: el PRIVADO de media si está configurado (videos/audios),
+        # si no, el bucket por defecto. Con bucket dedicado NO anteponemos
+        # AWS_LOCATION (evita un prefijo redundante tipo ``suscription/suscription/``).
+        media_bucket = getattr(settings, "MEDIA_PRIVATE_BUCKET", "") or settings.AWS_STORAGE_BUCKET_NAME
+        location = (
+            ""
+            if getattr(settings, "MEDIA_PRIVATE_BUCKET", "")
+            else (getattr(settings, "AWS_LOCATION", "") or "").strip("/")
+        )
+        # Key: [<AWS_LOCATION>/]<path_prefix>/<aleatorio>-<nombre>. El sufijo evita
+        # que dos archivos con el mismo nombre se pisen (no hay chequeo de colisión).
         unique = f"{secrets.token_hex(4)}-{filename}"
         key = "/".join(p for p in (location, prefix, unique) if p)
 
-        bucket = settings.AWS_STORAGE_BUCKET_NAME
+        bucket = media_bucket
         try:
             upload_url = self._client().generate_presigned_url(
                 "put_object",
@@ -170,8 +177,9 @@ class SignedUrlUploadView(APIView):
             return Response({"detail": "path inválido."}, status=400)
         if getattr(settings, "STORAGE_BACKEND", "local") != "s3":
             return Response(status=status.HTTP_204_NO_CONTENT)
+        media_bucket = getattr(settings, "MEDIA_PRIVATE_BUCKET", "") or settings.AWS_STORAGE_BUCKET_NAME
         try:
-            self._client().delete_object(Bucket=settings.AWS_STORAGE_BUCKET_NAME, Key=path)
+            self._client().delete_object(Bucket=media_bucket, Key=path)
         except Exception:
             pass
         return Response(status=status.HTTP_204_NO_CONTENT)

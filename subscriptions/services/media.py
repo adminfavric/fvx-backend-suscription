@@ -28,19 +28,19 @@ from django.conf import settings
 DEFAULT_EXPIRE = getattr(settings, "MEDIA_SIGNED_URL_EXPIRE", 7200)
 
 
-def _s3_key_from_url(url: str) -> str:
-    """Deriva la *key* del objeto dentro del bucket a partir de su URL pública.
+def _bucket_key_from_url(url: str) -> tuple[str, str]:
+    """Deriva ``(bucket, key)`` del objeto a partir de su URL (estilo path).
 
-    Soporta los dos estilos de URL de S3-compatibles:
-      · virtual-hosted: ``https://bucket.s3.region.amazonaws.com/<key>``
-      · path-style:     ``https://s3.region.backblazeb2.com/<bucket>/<key>``
-    En path-style el nombre del bucket es el primer segmento y hay que quitarlo.
+    Backblaze/S3 path-style: ``https://s3.region.backblazeb2.com/<bucket>/<key>``
+    → el primer segmento del path es el bucket y el resto la key. Así se firma
+    contra el bucket REAL donde está el archivo (público viejo o privado nuevo),
+    sin depender de una config fija.
     """
     path = unquote(urlparse(url).path).lstrip("/")
-    bucket = getattr(settings, "AWS_STORAGE_BUCKET_NAME", "") or ""
-    if bucket and path.startswith(bucket + "/"):
-        path = path[len(bucket) + 1:]
-    return path
+    parts = path.split("/", 1)
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return "", path
 
 
 def signed_media_url(file_url: str, expires: int | None = None) -> str:
@@ -58,20 +58,21 @@ def signed_media_url(file_url: str, expires: int | None = None) -> str:
         import boto3
         from botocore.client import Config
 
+        bucket, key = _bucket_key_from_url(file_url)
+        if not bucket or not key:
+            return file_url
+
         client = boto3.client(
             "s3",
             endpoint_url=getattr(settings, "AWS_S3_ENDPOINT_URL", None),
             aws_access_key_id=getattr(settings, "AWS_ACCESS_KEY_ID", ""),
             aws_secret_access_key=getattr(settings, "AWS_SECRET_ACCESS_KEY", ""),
             region_name=getattr(settings, "AWS_S3_REGION_NAME", "us-east-1"),
-            config=Config(signature_version="s3v4"),
+            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
         )
         return client.generate_presigned_url(
             "get_object",
-            Params={
-                "Bucket": settings.AWS_STORAGE_BUCKET_NAME,
-                "Key": _s3_key_from_url(file_url),
-            },
+            Params={"Bucket": bucket, "Key": key},
             ExpiresIn=expires or DEFAULT_EXPIRE,
         )
     except Exception:

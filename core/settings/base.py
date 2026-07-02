@@ -279,6 +279,11 @@ UPLOAD_ALLOWED_CONTENT_TYPES = env.list(
 # ``community/...`` en lugar de la raíz. Vacío (default) = sin prefijo.
 STORAGE_BUCKET_PREFIX = env("STORAGE_BUCKET_PREFIX", default="").strip().strip("/")
 
+# Bucket PRIVADO exclusivo para contenido protegido (videos/audios): se sube y se
+# sirve SOLO con URL firmada de vida corta. Las imágenes/portadas siguen en el
+# bucket público por defecto. Vacío = usar el bucket por defecto (sin separar).
+MEDIA_PRIVATE_BUCKET = env("MEDIA_PRIVATE_BUCKET", default="").strip()
+
 if STORAGE_BACKEND == "s3":
     # S3-compatible: AWS, Backblaze B2, DigitalOcean Spaces, Wasabi, Cloudflare R2, MinIO…
     # Para non-AWS, set AWS_S3_ENDPOINT_URL al endpoint del proveedor.
