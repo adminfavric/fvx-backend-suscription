@@ -1026,17 +1026,60 @@ class PaypalWebhookView(View):
             session = CheckoutSession.objects.filter(
                 provider=PaymentProvider.PAYPAL, subscription_id=sub_id
             ).first()
-            if session:
-                if event_type == "BILLING.SUBSCRIPTION.ACTIVATED":
+
+            if event_type == "BILLING.SUBSCRIPTION.ACTIVATED":
+                if session:
                     session.status = CheckoutSession.Status.SUBSCRIBED
-                elif event_type in (
-                    "BILLING.SUBSCRIPTION.CANCELLED",
-                    "BILLING.SUBSCRIPTION.EXPIRED",
-                    "BILLING.SUBSCRIPTION.SUSPENDED",
-                ):
+                    session.save(update_fields=["status", "modified"])
+                else:
+                    # RED DE SEGURIDAD: el navegador no registró la suscripción
+                    # (cerró la pestaña / falló la red en onApprove). La creamos
+                    # aquí, server-to-server, desde los datos que manda PayPal.
+                    self._create_from_webhook(sub_id, resource)
+            elif event_type in (
+                "BILLING.SUBSCRIPTION.CANCELLED",
+                "BILLING.SUBSCRIPTION.EXPIRED",
+                "BILLING.SUBSCRIPTION.SUSPENDED",
+            ):
+                if session:
                     session.status = CheckoutSession.Status.FAILED
-                session.save(update_fields=["status", "modified"])
+                    session.save(update_fields=["status", "modified"])
         return JsonResponse({"ok": True})
+
+    @staticmethod
+    def _create_from_webhook(sub_id: str, resource: dict) -> None:
+        """Crea la ``CheckoutSession`` de una suscripción PayPal activada cuando el
+        registro del navegador nunca llegó. Necesita mapear el plan de PayPal al
+        plan local (``paypal_plan_id``) y el correo del suscriptor."""
+        paypal_plan_id = resource.get("plan_id")
+        plan = (
+            Plan.objects.filter(paypal_plan_id=paypal_plan_id).first()
+            if paypal_plan_id
+            else None
+        )
+        subscriber = resource.get("subscriber", {}) or {}
+        email = (subscriber.get("email_address") or "").strip()
+        name_obj = subscriber.get("name", {}) or {}
+        name = " ".join(
+            x for x in [name_obj.get("given_name"), name_obj.get("surname")] if x
+        ).strip()
+
+        # Sin plan mapeado o sin correo no podemos dar acceso: se ignora (el pago
+        # sigue en PayPal; se puede registrar a mano desde el admin si hace falta).
+        if not (plan and email):
+            return
+
+        CheckoutSession.objects.get_or_create(
+            provider=PaymentProvider.PAYPAL,
+            subscription_id=sub_id,
+            defaults={
+                "plan": plan,
+                "name": name or email,
+                "email": email,
+                "status": CheckoutSession.Status.SUBSCRIBED,
+                "origin_note": "Registrada por webhook (onApprove no llegó).",
+            },
+        )
 
 
 class PublicLeadCreateView(generics.CreateAPIView):
