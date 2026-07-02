@@ -22,9 +22,10 @@ from urllib.parse import unquote, urlparse
 
 from django.conf import settings
 
-# Vida por defecto de la URL firmada (segundos). Suficiente para empezar a
-# reproducir; el navegador puede seguir leyendo el stream ya iniciado.
-DEFAULT_EXPIRE = getattr(settings, "MEDIA_SIGNED_URL_EXPIRE", 900)
+# Vida por defecto de la URL firmada (segundos). 2 horas: suficiente para ver
+# videos largos sin que la firma expire a mitad (aunque se pause y se adelante).
+# Ajustable por env ``MEDIA_SIGNED_URL_EXPIRE``.
+DEFAULT_EXPIRE = getattr(settings, "MEDIA_SIGNED_URL_EXPIRE", 7200)
 
 
 def _s3_key_from_url(url: str) -> str:
