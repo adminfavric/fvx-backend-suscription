@@ -27,6 +27,11 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--bucket", default=None, help="Bucket (default: MEDIA_PRIVATE_BUCKET o el por defecto).")
         parser.add_argument("--origins", nargs="+", default=None, help="Orígenes HTTPS permitidos.")
+        # Credenciales con permiso de escritura de CORS (p. ej. la Master
+        # Application Key). Si no se pasan, usa las del .env — que pueden estar
+        # restringidas y dar "not entitled".
+        parser.add_argument("--access-key", default=None, help="keyID con permiso writeBucketCors (ej. Master Key).")
+        parser.add_argument("--secret-key", default=None, help="applicationKey correspondiente.")
 
     def handle(self, *args, **opts):
         if getattr(settings, "STORAGE_BACKEND", "local") != "s3":
@@ -55,8 +60,8 @@ class Command(BaseCommand):
         client = boto3.client(
             "s3",
             endpoint_url=getattr(settings, "AWS_S3_ENDPOINT_URL", None),
-            aws_access_key_id=getattr(settings, "AWS_ACCESS_KEY_ID", ""),
-            aws_secret_access_key=getattr(settings, "AWS_SECRET_ACCESS_KEY", ""),
+            aws_access_key_id=opts["access_key"] or getattr(settings, "AWS_ACCESS_KEY_ID", ""),
+            aws_secret_access_key=opts["secret_key"] or getattr(settings, "AWS_SECRET_ACCESS_KEY", ""),
             region_name=getattr(settings, "AWS_S3_REGION_NAME", "us-east-1"),
             config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
         )
