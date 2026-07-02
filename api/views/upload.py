@@ -11,7 +11,9 @@ local, S3-compatible o GCS según ``settings.STORAGE_BACKEND`` (ver
 from __future__ import annotations
 
 import os
+import secrets
 
+from django.conf import settings
 from django.core.files.storage import default_storage
 from django.utils.text import get_valid_filename
 from rest_framework import status
@@ -73,6 +75,106 @@ class UploadView(APIView):
         }
         response = UploadResponseSerializer(payload)
         return Response(response.data, status=status.HTTP_201_CREATED)
+
+
+def _ext(name: str) -> str:
+    return os.path.splitext(name or "")[1].lower().lstrip(".")
+
+
+class SignedUrlUploadView(APIView):
+    """
+    Subida DIRECTA al bucket (S3/Backblaze) sin pasar por el backend.
+
+    ``POST /api/v1/uploads/signed-url/`` con ``{filename, mime_type, size,
+    path_prefix?}`` → devuelve un ``upload_url`` (presigned PUT) al que el
+    navegador sube el archivo directamente, y el ``public_url`` que se guarda como
+    referencia. Ideal para videos grandes: no consume el timeout ni el ancho de
+    banda del servidor. La reproducción sigue firmándose por sesión (``/media/``).
+
+    Requiere ``STORAGE_BACKEND=s3``. En local (dev) no aplica: se responde 400 y el
+    front puede caer al provider normal.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def _client(self):
+        import boto3
+        from botocore.client import Config
+
+        return boto3.client(
+            "s3",
+            endpoint_url=getattr(settings, "AWS_S3_ENDPOINT_URL", None),
+            aws_access_key_id=getattr(settings, "AWS_ACCESS_KEY_ID", ""),
+            aws_secret_access_key=getattr(settings, "AWS_SECRET_ACCESS_KEY", ""),
+            region_name=getattr(settings, "AWS_S3_REGION_NAME", "us-east-1"),
+            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+        )
+
+    def post(self, request):
+        if getattr(settings, "STORAGE_BACKEND", "local") != "s3":
+            return Response(
+                {"detail": "La subida directa requiere almacenamiento S3."}, status=400
+            )
+
+        data = request.data
+        filename = _safe_name(data.get("filename") or "")
+        size = int(data.get("size") or 0)
+        prefix = (data.get("path_prefix") or "").strip().strip("/")
+        if ".." in prefix.split("/"):
+            return Response({"detail": "path_prefix inválido."}, status=400)
+
+        # Validaciones equivalentes al upload por backend (tipo + tamaño).
+        allowed_ext = getattr(settings, "UPLOAD_ALLOWED_EXTENSIONS", None)
+        if allowed_ext is not None and _ext(filename) not in allowed_ext:
+            return Response(
+                {"detail": f'Tipo ".{_ext(filename) or "?"}" no permitido.'}, status=400
+            )
+        limit = getattr(settings, "UPLOAD_MAX_BYTES", 500 * 1024 * 1024)
+        if size and size > limit:
+            mb = limit // (1024 * 1024)
+            return Response({"detail": f"El archivo supera el máximo de {mb} MB."}, status=400)
+
+        # Key: <AWS_LOCATION>/<path_prefix>/<aleatorio>-<nombre>. El sufijo evita
+        # que dos archivos con el mismo nombre se pisen (no hay chequeo de colisión
+        # en la subida directa).
+        location = (getattr(settings, "AWS_LOCATION", "") or "").strip("/")
+        unique = f"{secrets.token_hex(4)}-{filename}"
+        key = "/".join(p for p in (location, prefix, unique) if p)
+
+        bucket = settings.AWS_STORAGE_BUCKET_NAME
+        try:
+            upload_url = self._client().generate_presigned_url(
+                "put_object",
+                Params={"Bucket": bucket, "Key": key},
+                ExpiresIn=getattr(settings, "UPLOAD_SIGNED_URL_EXPIRE", 3600),
+            )
+        except Exception:
+            return Response({"detail": "No se pudo firmar la subida."}, status=502)
+
+        endpoint = (getattr(settings, "AWS_S3_ENDPOINT_URL", "") or "").rstrip("/")
+        public_url = f"{endpoint}/{bucket}/{key}" if endpoint else key
+
+        return Response(
+            {
+                "upload_url": upload_url,
+                "upload_headers": {},
+                "storage_path": key,
+                "public_url": public_url,
+            }
+        )
+
+    def delete(self, request):
+        """``DELETE /uploads/signed-url/?path=<key>`` — borra el objeto del bucket."""
+        path = (request.query_params.get("path") or "").strip()
+        if not path or ".." in path.split("/"):
+            return Response({"detail": "path inválido."}, status=400)
+        if getattr(settings, "STORAGE_BACKEND", "local") != "s3":
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        try:
+            self._client().delete_object(Bucket=settings.AWS_STORAGE_BUCKET_NAME, Key=path)
+        except Exception:
+            pass
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class UploadDeleteView(APIView):

@@ -11,6 +11,7 @@ from .views import (
     MeUiPreferencesAPIView,
     NotificationViewSet,
     UiSettingsAPIView,
+    SignedUrlUploadView,
     UploadDeleteView,
     UploadView,
     UserViewSet,
@@ -28,6 +29,7 @@ urlpatterns = [
     path("me/ui-preferences/", MeUiPreferencesAPIView.as_view(), name="me-ui-preferences"),
     path("stats/", DashboardStatsAPIView.as_view(), name="dashboard-stats"),
     path("uploads/", UploadView.as_view(), name="upload"),
+    path("uploads/signed-url/", SignedUrlUploadView.as_view(), name="upload-signed-url"),
     path("uploads/object/", UploadDeleteView.as_view(), name="upload-delete"),
     path("", include(router.urls)),
 ]

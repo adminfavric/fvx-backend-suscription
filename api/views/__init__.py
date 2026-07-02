@@ -9,7 +9,7 @@ from .api_key import ApiKeyViewSet
 from .menu import MenuViewSet
 from .notification import NotificationViewSet
 from .ui import DashboardStatsAPIView, MeUiPreferencesAPIView, UiSettingsAPIView
-from .upload import UploadDeleteView, UploadView
+from .upload import SignedUrlUploadView, UploadDeleteView, UploadView
 from .user import GroupViewSet, UserViewSet
 
 __all__ = [
@@ -19,6 +19,7 @@ __all__ = [
     "MeUiPreferencesAPIView",
     "MenuViewSet",
     "NotificationViewSet",
+    "SignedUrlUploadView",
     "UiSettingsAPIView",
     "UploadDeleteView",
     "UploadView",
