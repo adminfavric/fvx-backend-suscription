@@ -143,13 +143,25 @@ class PlanAdmin(admin.ModelAdmin):
 
 @admin.register(CheckoutSession)
 class CheckoutSessionAdmin(admin.ModelAdmin):
-    """Suscripciones públicas. ``provider`` distingue Flow (CLP) de PayPal (USD)."""
+    """Suscripciones públicas. ``provider`` distingue Flow (CLP) de PayPal (USD).
+
+    Permite el ALTA/EDICIÓN manual: útil cuando un pago (p. ej. PayPal) se cobró
+    pero el registro automático falló y hay que dejar al cliente con acceso a mano.
+    Para dar acceso: provider=PayPal, plan, email, status=Subscribed (el
+    subscription_id ``I-…`` es opcional; ayuda a cancelar/verificar después)."""
 
     list_display = ["email", "provider", "plan", "status", "subscription_id", "created"]
     list_filter = ["provider", "status", "plan"]
     search_fields = ["email", "name", "subscription_id", "flow_customer_id", "register_token"]
     ordering = ["-created"]
-    readonly_fields = [f.name for f in CheckoutSession._meta.fields]
+    autocomplete_fields = ["plan"]
+    # Solo los campos relevantes para el alta manual (los internos de Flow y el
+    # link de pago quedan fuera del form). Las fechas son automáticas.
+    fields = [
+        "provider", "plan", "name", "email", "status", "subscription_id",
+        "access_until", "period_months", "origin_note", "created", "modified",
+    ]
+    readonly_fields = ["created", "modified"]
 
 
 @admin.register(ContentItem)
