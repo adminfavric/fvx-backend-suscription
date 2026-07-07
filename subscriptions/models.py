@@ -555,6 +555,119 @@ class EventOrder(TimeStampedModel):
         return f"{self.email} → {self.event_id} ({self.status})"
 
 
+def default_launch_tiers() -> list:
+    """Valor inicial de ``LaunchSchedule.tiers`` (el calendario que hoy está
+    quemado en el componente). El admin lo edita; esto solo siembra el singleton."""
+    return [
+        {
+            "name": "BÁSICO",
+            "badge": "",
+            "featured": False,
+            "items": [
+                {"title": "Taller Alkymia Solar para Principiantes", "when": "Domingo 28 · 03:00 PM"},
+            ],
+        },
+        {
+            "name": "PREMIUM",
+            "badge": "",
+            "featured": False,
+            "items": [
+                {"title": "Taller de Sanación del Árbol Genealógico", "when": "Domingo 28 · 10:00 AM"},
+                {"title": "Taller Alkymia Solar para Principiantes", "when": "Domingo 28 · 03:00 PM"},
+                {"title": "Podcast + Conversatorio (tema sorpresa)", "when": "Lunes 29 · 10:00 AM"},
+            ],
+        },
+        {
+            "name": "ORO",
+            "badge": "Acceso completo",
+            "featured": True,
+            "items": [
+                {"title": "Taller de Sanación del Árbol Genealógico", "when": "Domingo 28 · 10:00 AM"},
+                {"title": "Taller Alkymia Solar para Principiantes", "when": "Domingo 28 · 03:00 PM"},
+                {"title": "Podcast + Conversatorio (tema sorpresa)", "when": "Lunes 29 · 10:00 AM"},
+                {"title": "Escuelas", "when": "Fechas por definir"},
+            ],
+        },
+    ]
+
+
+class LaunchSchedule(TimeStampedModel):
+    """
+    Bloque de campaña editable que se muestra ANTES de las membresías: mensaje de
+    bienvenida + "Próximas actividades" (calendario de iniciación por nivel).
+
+    Es un **singleton** (solo existe la fila ``pk=1``, igual que ``UiSettings``):
+    el admin edita aquí lo que quiere que se vea en el sitio, sin tocar código.
+    El frontend lo consume por ``GET /public/launch-schedule/`` y, si ``enabled``
+    es falso, no muestra el bloque (útil cuando la plataforma ya esté poblada).
+    Las actividades por nivel viven en ``tiers`` (JSON: lista de columnas, cada
+    una con ``name``/``badge``/``featured``/``items:[{title, when}]``).
+    """
+
+    enabled = models.BooleanField(
+        _("enabled"), default=True,
+        help_text=_("Mostrar el bloque de bienvenida + próximas actividades en el sitio."),
+    )
+    intro_title = models.CharField(
+        _("intro title"), max_length=255,
+        default="Estamos preparando tu espacio con mucho cariño",
+    )
+    intro_body = models.TextField(
+        _("intro body"),
+        default=(
+            "Este es un espacio donde podrás acceder al nutritivo contenido que estamos "
+            "creando para ti: videos, libros, talleres y nuestros encuentros por Zoom "
+            "dedicados especialmente a nuestra comunidad.\n\n"
+            "Ya tenemos las primeras fechas confirmadas. Si aún no ves nada en tu panel "
+            "de suscripción, ¡no te preocupes! Aquí abajo te compartimos el calendario "
+            "de iniciación."
+        ),
+        help_text=_("Párrafos de bienvenida. Separa cada párrafo con una línea en blanco."),
+    )
+    gift_note = models.TextField(
+        _("gift note"), blank=True,
+        default=(
+            "Y como agradecimiento por tu confianza y tu espera, quienes se hayan "
+            "registrado antes del 25 de junio recibirán un regalo sorpresa. 🎁"
+        ),
+        help_text=_("Aviso del regalo (recuadro dorado). Vacío = no se muestra el recuadro."),
+    )
+    timezone_label = models.CharField(
+        _("timezone label"), max_length=80, default="Horarios de Chile · GMT-3",
+    )
+    heading = models.CharField(
+        _("schedule heading"), max_length=120, default="Próximas actividades",
+    )
+    tiers = models.JSONField(
+        _("tiers"), default=default_launch_tiers, blank=True,
+        help_text=_(
+            "Columnas por nivel. Lista de objetos: "
+            "{\"name\", \"badge\", \"featured\", \"items\":[{\"title\", \"when\"}]}."
+        ),
+    )
+    signature = models.CharField(
+        _("signature"), max_length=120, default="Grupo Alkymia",
+    )
+
+    class Meta:
+        verbose_name = _("launch schedule")
+        verbose_name_plural = _("launch schedule")
+
+    def __str__(self) -> str:
+        return "Launch schedule (próximas actividades)"
+
+    def save(self, *args, **kwargs):
+        # Singleton: siempre la misma fila.
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def load(cls) -> "LaunchSchedule":
+        """Devuelve el singleton, creándolo con los valores por defecto si falta."""
+        obj, _created = cls.objects.get_or_create(pk=1)
+        return obj
+
+
 class Lead(TimeStampedModel):
     """
     Captura de contactos del sitio público: newsletter, formulario de contacto e

@@ -8,6 +8,7 @@ from .models import (
     ContentItem,
     ContentSchedule,
     Event,
+    LaunchSchedule,
     Lead,
     PaymentProvider,
     Plan,
@@ -223,6 +224,46 @@ class PaymentLinkSerializer(serializers.ModelSerializer):
 
     def get_is_paid(self, obj: CheckoutSession) -> bool:
         return obj.status == CheckoutSession.Status.SUBSCRIBED
+
+
+class LaunchScheduleSerializer(serializers.ModelSerializer):
+    """Bloque de campaña editable (bienvenida + próximas actividades). Forma
+    consumida por ``app-launch-schedule`` en el sitio público y por el editor del
+    panel admin."""
+
+    class Meta:
+        model = LaunchSchedule
+        fields = [
+            "enabled", "intro_title", "intro_body", "gift_note",
+            "timezone_label", "heading", "tiers", "signature",
+        ]
+
+    def validate_tiers(self, value):
+        """``tiers`` debe ser una lista de columnas normalizadas: cada una con
+        ``name`` (texto), ``badge``/``featured`` opcionales e ``items`` (lista de
+        ``{title, when}``). Se normaliza para no publicar formas que rompan el
+        render del sitio."""
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Debe ser una lista de columnas.")
+        clean = []
+        for col in value:
+            if not isinstance(col, dict):
+                raise serializers.ValidationError("Cada columna debe ser un objeto.")
+            items = []
+            for it in col.get("items") or []:
+                if not isinstance(it, dict):
+                    continue
+                title = str(it.get("title", "")).strip()
+                if not title:
+                    continue
+                items.append({"title": title, "when": str(it.get("when", "")).strip()})
+            clean.append({
+                "name": str(col.get("name", "")).strip(),
+                "badge": str(col.get("badge", "")).strip(),
+                "featured": bool(col.get("featured", False)),
+                "items": items,
+            })
+        return clean
 
 
 class LeadSerializer(serializers.ModelSerializer):

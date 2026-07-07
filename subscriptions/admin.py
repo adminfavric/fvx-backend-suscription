@@ -3,7 +3,17 @@
 from django.contrib import admin, messages
 from django.utils.translation import gettext_lazy as _
 
-from .models import CheckoutSession, CompMembership, ContentItem, ContentSchedule, Event, EventOrder, Lead, Plan
+from .models import (
+    CheckoutSession,
+    CompMembership,
+    ContentItem,
+    ContentSchedule,
+    Event,
+    EventOrder,
+    LaunchSchedule,
+    Lead,
+    Plan,
+)
 from .services import (
     FlowError,
     PayPalError,
@@ -216,6 +226,35 @@ class LeadAdmin(admin.ModelAdmin):
     search_fields = ["email", "name", "subject", "message"]
     ordering = ["-created"]
     readonly_fields = [f.name for f in Lead._meta.fields]
+
+
+@admin.register(LaunchSchedule)
+class LaunchScheduleAdmin(admin.ModelAdmin):
+    """Bloque de campaña (bienvenida + próximas actividades). Singleton: se edita
+    la única fila; no se agrega ni se borra. ``tiers`` es un JSON con las columnas
+    por nivel (name/badge/featured/items:[{title, when}])."""
+
+    fieldsets = (
+        (_("Visibilidad"), {"fields": ("enabled",)}),
+        (_("Bienvenida"), {"fields": ("intro_title", "intro_body", "gift_note")}),
+        (_("Próximas actividades"), {
+            "fields": ("timezone_label", "heading", "tiers", "signature"),
+            "description": _(
+                "«tiers» es la lista de columnas por nivel. Cada columna: "
+                "{\"name\": \"ORO\", \"badge\": \"Acceso completo\", \"featured\": true, "
+                "\"items\": [{\"title\": \"Taller…\", \"when\": \"Domingo 28 · 10:00 AM\"}]}."
+            ),
+        }),
+        (_("Registro"), {"fields": ("created", "modified")}),
+    )
+    readonly_fields = ["created", "modified"]
+
+    def has_add_permission(self, request):
+        # Singleton: solo se edita la fila existente (se crea sola vía load()).
+        return not LaunchSchedule.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(CompMembership)

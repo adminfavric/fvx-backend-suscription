@@ -36,6 +36,7 @@ from .models import (
     ContentSchedule,
     Event,
     EventOrder,
+    LaunchSchedule,
     Lead,
     PaymentProvider,
     Plan,
@@ -45,6 +46,7 @@ from .serializers import (
     ContentItemSerializer,
     ContentScheduleSerializer,
     EventSerializer,
+    LaunchScheduleSerializer,
     LeadSerializer,
     MemberContentSerializer,
     PaymentLinkSerializer,
@@ -338,6 +340,94 @@ class PublicMembershipListView(generics.ListAPIView):
     authentication_classes = []
     throttle_classes = []  # catálogo público de lectura: no consumir el cupo anon
     pagination_class = None
+
+
+class PublicLaunchScheduleView(APIView):
+    """
+    ``GET /public/launch-schedule/`` — bloque de campaña editable (bienvenida +
+    "Próximas actividades") que se muestra antes de las membresías. Lee el
+    singleton ``LaunchSchedule`` que el admin edita. Público, sin auth: es
+    contenido del sitio de marketing. El front oculta el bloque si ``enabled``
+    es falso.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = []  # lectura pública de contenido de marketing
+
+    def get(self, request):
+        return Response(LaunchScheduleSerializer(LaunchSchedule.load()).data)
+
+
+_WEEKDAYS_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+
+
+def _format_when(dt) -> str:
+    """Formatea un ``datetime`` como en el sitio: 'Domingo 28 · 03:00 PM'
+    (día de semana en español, día del mes y hora 12h, en zona de Chile)."""
+    local = timezone.localtime(dt)
+    weekday = _WEEKDAYS_ES[local.weekday()]
+    ampm = "AM" if local.hour < 12 else "PM"
+    hour12 = local.hour % 12 or 12
+    return f"{weekday} {local.day} · {hour12:02d}:{local.minute:02d} {ampm}"
+
+
+class AdminLaunchScheduleView(APIView):
+    """
+    ``GET`` / ``PUT`` del bloque de "Próximas actividades" (panel admin). Lee y
+    guarda el singleton ``LaunchSchedule`` que se publica en el sitio público.
+    Lectura a autenticados; escritura solo a staff/ADMIN (``IsAdminOrReadOnly``).
+    """
+
+    permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
+
+    def get(self, request):
+        return Response(LaunchScheduleSerializer(LaunchSchedule.load()).data)
+
+    def put(self, request):
+        obj = LaunchSchedule.load()
+        ser = LaunchScheduleSerializer(obj, data=request.data)
+        ser.is_valid(raise_exception=True)
+        ser.save()
+        return Response(ser.data)
+
+
+class AdminLaunchScheduleSuggestionsView(APIView):
+    """
+    ``GET`` — arma una propuesta de columnas por nivel a partir de la
+    **Programación**: por cada membresía pública, sus próximas sesiones en vivo
+    (contenido con ``live_start`` futuro asignado a ese plan). El editor la ofrece
+    como punto de partida; el admin la ajusta y publica. No modifica nada.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        now = timezone.now()
+        tiers = []
+        plans = Plan.objects.filter(is_public=True, is_active=True).order_by("order", "name")
+        for plan in plans:
+            schedules = (
+                ContentSchedule.objects.filter(
+                    plan=plan,
+                    content__live_start__isnull=False,
+                    content__live_start__gte=now,
+                    content__is_published=True,
+                )
+                .select_related("content")
+                .order_by("content__live_start")
+            )
+            items = [
+                {"title": s.content.title, "when": _format_when(s.content.live_start)}
+                for s in schedules
+            ]
+            tiers.append({
+                "name": plan.name.upper(),
+                "badge": "Acceso completo" if plan.featured else "",
+                "featured": plan.featured,
+                "items": items,
+            })
+        return Response({"tiers": tiers})
 
 
 class EventViewSet(viewsets.ModelViewSet):
