@@ -231,18 +231,18 @@ class LeadAdmin(admin.ModelAdmin):
 @admin.register(LaunchSchedule)
 class LaunchScheduleAdmin(admin.ModelAdmin):
     """Bloque de campaña (bienvenida + próximas actividades). Singleton: se edita
-    la única fila; no se agrega ni se borra. ``tiers`` es un JSON con las columnas
-    por nivel (name/badge/featured/items:[{title, when}])."""
+    la única fila; no se agrega ni se borra. Las columnas de actividades ya NO se
+    editan aquí: se generan solas desde la Programación (``admin/programacion``)."""
 
     fieldsets = (
         (_("Visibilidad"), {"fields": ("enabled",)}),
         (_("Bienvenida"), {"fields": ("intro_title", "intro_body", "gift_note")}),
         (_("Próximas actividades"), {
-            "fields": ("timezone_label", "heading", "tiers", "signature"),
+            "fields": ("timezone_label", "heading", "signature"),
             "description": _(
-                "«tiers» es la lista de columnas por nivel. Cada columna: "
-                "{\"name\": \"ORO\", \"badge\": \"Acceso completo\", \"featured\": true, "
-                "\"items\": [{\"title\": \"Taller…\", \"when\": \"Domingo 28 · 10:00 AM\"}]}."
+                "Las columnas de actividades por nivel se generan automáticamente "
+                "desde la Programación (sesiones en vivo próximas de cada membresía); "
+                "ya no se editan a mano aquí."
             ),
         }),
         (_("Registro"), {"fields": ("created", "modified")}),

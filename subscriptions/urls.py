@@ -5,8 +5,6 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AdminBroadcastView,
-    AdminLaunchScheduleView,
-    AdminLaunchScheduleSuggestionsView,
     AdminSubscriptionListView,
     CheckoutReturnView,
     CheckoutStartView,
@@ -63,9 +61,6 @@ urlpatterns = [
     path("subscriptions/", FlowSubscriptionsListView.as_view(), name="flow-subscriptions"),
     path("subscriptions/all/", AdminSubscriptionListView.as_view(), name="subscriptions-all"),
     path("broadcast/", AdminBroadcastView.as_view(), name="admin-broadcast"),
-    # Bloque "Próximas actividades" (editor del panel): leer/publicar + sugerencias.
-    path("launch-schedule/", AdminLaunchScheduleView.as_view(), name="admin-launch-schedule"),
-    path("launch-schedule/suggestions/", AdminLaunchScheduleSuggestionsView.as_view(), name="admin-launch-schedule-suggestions"),
     path("subscriptions/cancel/", FlowSubscriptionCancelView.as_view(), name="flow-subscription-cancel"),
     path("subscriptions/reactivate/", FlowSubscriptionReactivateView.as_view(), name="flow-subscription-reactivate"),
     path("public/memberships/", PublicMembershipListView.as_view(), name="public-memberships"),

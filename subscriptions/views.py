@@ -22,7 +22,7 @@ from api.permissions import IsAdminOrReadOnly
 
 import re
 import secrets
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
 from django.core.cache import cache
 from django.db.models import Q
@@ -342,24 +342,11 @@ class PublicMembershipListView(generics.ListAPIView):
     pagination_class = None
 
 
-class PublicLaunchScheduleView(APIView):
-    """
-    ``GET /public/launch-schedule/`` — bloque de campaña editable (bienvenida +
-    "Próximas actividades") que se muestra antes de las membresías. Lee el
-    singleton ``LaunchSchedule`` que el admin edita. Público, sin auth: es
-    contenido del sitio de marketing. El front oculta el bloque si ``enabled``
-    es falso.
-    """
-
-    permission_classes = [AllowAny]
-    authentication_classes = []
-    throttle_classes = []  # lectura pública de contenido de marketing
-
-    def get(self, request):
-        return Response(LaunchScheduleSerializer(LaunchSchedule.load()).data)
-
-
 _WEEKDAYS_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+_MONTHS_ES = [
+    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+]
 
 
 def _format_when(dt) -> str:
@@ -372,62 +359,74 @@ def _format_when(dt) -> str:
     return f"{weekday} {local.day} · {hour12:02d}:{local.minute:02d} {ampm}"
 
 
-class AdminLaunchScheduleView(APIView):
+def _format_when_date(d) -> str:
+    """Formatea una FECHA sin hora: 'Domingo 28 · Julio' (la columna «Desde» de la
+    Programación es solo fecha, así que no hay hora que mostrar)."""
+    return f"{_WEEKDAYS_ES[d.weekday()]} {d.day} · {_MONTHS_ES[d.month - 1]}"
+
+
+def _schedule_start_dt(schedule):
+    """Momento de inicio EFECTIVO de una fila de Programación, para ordenar y
+    filtrar "Próximas actividades": la fecha-hora exacta de la sesión en vivo
+    (``live_start``) si la hay; si no, la fecha «Desde» (``starts_at``) a
+    medianoche local. Devuelve un ``datetime`` aware."""
+    live = schedule.content.live_start
+    if live is not None:
+        return live
+    return timezone.make_aware(datetime.combine(schedule.starts_at, time.min))
+
+
+def build_launch_tiers_from_schedule() -> list:
+    """Arma las columnas de "Próximas actividades" a partir de la **Programación**
+    (``admin/programacion``). Por cada membresía pública se listan sus filas de
+    Programación cuyo inicio EFECTIVO aún no ha pasado (``> ahora``): para las
+    sesiones en vivo, su fecha-hora real; para el resto, la fecha «Desde». Así el
+    bloque solo muestra lo que viene y cada actividad desaparece sola al pasar su
+    fecha/hora, sin editarlo por separado."""
+    now = timezone.now()
+    tiers = []
+    plans = Plan.objects.filter(is_public=True, is_active=True).order_by("order", "name")
+    for plan in plans:
+        rows = (
+            ContentSchedule.objects.filter(plan=plan, content__is_published=True)
+            .select_related("content")
+        )
+        upcoming = []
+        for s in rows:
+            start_dt = _schedule_start_dt(s)
+            if start_dt <= now:
+                continue  # ya comenzó/pasó → ya no es "próxima"
+            when = _format_when(s.content.live_start) if s.content.live_start else _format_when_date(s.starts_at)
+            upcoming.append((start_dt, s.content.title, when))
+        upcoming.sort(key=lambda x: x[0])
+        tiers.append({
+            "name": plan.name.upper(),
+            "badge": "Acceso completo" if plan.featured else "",
+            "featured": bool(plan.featured),
+            "items": [{"title": title, "when": when} for _, title, when in upcoming],
+        })
+    return tiers
+
+
+class PublicLaunchScheduleView(APIView):
     """
-    ``GET`` / ``PUT`` del bloque de "Próximas actividades" (panel admin). Lee y
-    guarda el singleton ``LaunchSchedule`` que se publica en el sitio público.
-    Lectura a autenticados; escritura solo a staff/ADMIN (``IsAdminOrReadOnly``).
+    ``GET /public/launch-schedule/`` — bloque de campaña (bienvenida + "Próximas
+    actividades") que se muestra antes de las membresías. El texto de bienvenida
+    (intro, regalo, encabezado, firma) sale del singleton ``LaunchSchedule``; las
+    columnas de actividades se derivan EN VIVO de la Programación
+    (``admin/programacion``) para que siempre calcen con lo agendado. Público, sin
+    auth. El front oculta el bloque si ``enabled`` es falso.
     """
 
-    permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = []  # lectura pública de contenido de marketing
 
     def get(self, request):
-        return Response(LaunchScheduleSerializer(LaunchSchedule.load()).data)
-
-    def put(self, request):
-        obj = LaunchSchedule.load()
-        ser = LaunchScheduleSerializer(obj, data=request.data)
-        ser.is_valid(raise_exception=True)
-        ser.save()
-        return Response(ser.data)
-
-
-class AdminLaunchScheduleSuggestionsView(APIView):
-    """
-    ``GET`` — arma una propuesta de columnas por nivel a partir de la
-    **Programación**: por cada membresía pública, sus próximas sesiones en vivo
-    (contenido con ``live_start`` futuro asignado a ese plan). El editor la ofrece
-    como punto de partida; el admin la ajusta y publica. No modifica nada.
-    """
-
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        now = timezone.now()
-        tiers = []
-        plans = Plan.objects.filter(is_public=True, is_active=True).order_by("order", "name")
-        for plan in plans:
-            schedules = (
-                ContentSchedule.objects.filter(
-                    plan=plan,
-                    content__live_start__isnull=False,
-                    content__live_start__gte=now,
-                    content__is_published=True,
-                )
-                .select_related("content")
-                .order_by("content__live_start")
-            )
-            items = [
-                {"title": s.content.title, "when": _format_when(s.content.live_start)}
-                for s in schedules
-            ]
-            tiers.append({
-                "name": plan.name.upper(),
-                "badge": "Acceso completo" if plan.featured else "",
-                "featured": plan.featured,
-                "items": items,
-            })
-        return Response({"tiers": tiers})
+        data = LaunchScheduleSerializer(LaunchSchedule.load()).data
+        # Las actividades ya no se editan a mano: se calculan desde la Programación.
+        data["tiers"] = build_launch_tiers_from_schedule()
+        return Response(data)
 
 
 class EventViewSet(viewsets.ModelViewSet):
