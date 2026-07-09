@@ -64,6 +64,7 @@ from .services import (
     sync_plan_to_paypal,
 )
 from .services import member_auth, zoom
+from .services.event_reminders import send_live_event_reminders
 
 
 class PlanViewSet(viewsets.ModelViewSet):
@@ -438,6 +439,117 @@ class PublicLaunchScheduleView(APIView):
         # Las actividades ya no se editan a mano: se calculan desde la Programación.
         data["tiers"] = build_launch_tiers_from_schedule()
         return Response(data)
+
+
+# ── Notificaciones automáticas (avisos por correo programados) ────────────────
+# Metadatos de las tareas periódicas que el admin puede ver/prender/apagar desde
+# el panel. Se identifican por su ``task`` path (estable), no por el nombre.
+_REMINDER_META = {
+    "subscriptions.tasks.send_live_event_reminders": {
+        "key": "live_event",
+        "title": "Aviso de sesiones en vivo",
+        "description": "Correo automático ~30 min antes de cada sesión Zoom, a los miembros con acceso a ese plan.",
+        "schedule": "Cada 5 minutos",
+        "has_test": True,
+    },
+    "subscriptions.tasks.send_expiry_reminders": {
+        "key": "expiry",
+        "title": "Recordatorio de vencimiento",
+        "description": "Correo a los miembros con membresía por período próxima a vencer, para que renueven.",
+        "schedule": "Diario",
+        "has_test": False,
+    },
+}
+
+
+def _load_periodic_tasks():
+    """Mapa {task_path: PeriodicTask} de las tareas conocidas. Vacío si
+    django_celery_beat no está disponible (defensivo)."""
+    try:
+        from django_celery_beat.models import PeriodicTask
+        return {t.task: t for t in PeriodicTask.objects.filter(task__in=list(_REMINDER_META))}
+    except Exception:
+        return {}
+
+
+class AdminNotificationsView(APIView):
+    """
+    Panel de notificaciones automáticas del admin. ``GET`` lista los avisos
+    programados con su estado (activo, última corrida), el estado de Celery y la
+    config de correo. ``POST`` prende/apaga un aviso (por su ``task``).
+    """
+
+    permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
+
+    def get(self, request):
+        tasks = _load_periodic_tasks()
+        newest_run = None
+        reminders = []
+        for task_path, meta in _REMINDER_META.items():
+            t = tasks.get(task_path)
+            last_run = getattr(t, "last_run_at", None) if t else None
+            if last_run and (newest_run is None or last_run > newest_run):
+                newest_run = last_run
+            reminders.append({
+                **meta,
+                "task": task_path,
+                "registered": bool(t),
+                "enabled": bool(t.enabled) if t else False,
+                "last_run_at": last_run,
+                "lead_minutes": (
+                    getattr(settings, "LIVE_EVENT_REMINDER_MINUTES", 30)
+                    if meta["key"] == "live_event" else None
+                ),
+            })
+
+        host = getattr(settings, "EMAIL_HOST", "") or ""
+        email = {
+            "host": host,
+            "from_email": getattr(settings, "DEFAULT_FROM_EMAIL", ""),
+            # 'mailpit'/localhost = entorno local (no envía de verdad).
+            "looks_real": bool(host) and host not in ("mailpit", "localhost", "127.0.0.1"),
+        }
+        # Celery se considera "sano" si alguna tarea corrió hace poco (beat vivo).
+        healthy = bool(newest_run) and (timezone.now() - newest_run) < timedelta(minutes=15)
+        return Response({
+            "reminders": reminders,
+            "email": email,
+            "celery": {"healthy": healthy, "last_run_at": newest_run},
+        })
+
+    def post(self, request):
+        """Prende/apaga un aviso por su ``task`` path."""
+        task_path = (request.data.get("task") or "").strip()
+        if task_path not in _REMINDER_META:
+            return Response({"detail": "Aviso desconocido."}, status=400)
+        try:
+            from django_celery_beat.models import PeriodicTask
+            t = PeriodicTask.objects.filter(task=task_path).first()
+        except Exception:
+            t = None
+        if not t:
+            return Response(
+                {"detail": "El aviso no está registrado (¿corrió la migración y está Celery beat?)."},
+                status=404,
+            )
+        t.enabled = bool(request.data.get("enabled"))
+        t.save(update_fields=["enabled"])
+        return Response({"task": task_path, "enabled": t.enabled})
+
+
+class AdminNotificationsRunLiveView(APIView):
+    """Dispara AHORA el aviso de sesiones en vivo (botón de prueba). Corre
+    síncrono y devuelve cuántos correos se enviaron. Solo envía si hay una sesión
+    en los próximos ~30 min (y deduplica, así que no genera spam si se repite)."""
+
+    permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
+
+    def post(self, request):
+        try:
+            sent = send_live_event_reminders()
+        except Exception as exc:  # pragma: no cover - defensivo
+            return Response({"detail": f"No se pudo enviar: {exc}"}, status=500)
+        return Response({"sent": sent})
 
 
 class EventViewSet(viewsets.ModelViewSet):
