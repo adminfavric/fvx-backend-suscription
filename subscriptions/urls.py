@@ -5,8 +5,6 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AdminBroadcastView,
-    AdminNotificationsView,
-    AdminNotificationsRunLiveView,
     AdminSubscriptionListView,
     CheckoutReturnView,
     CheckoutStartView,
@@ -63,9 +61,6 @@ urlpatterns = [
     path("subscriptions/", FlowSubscriptionsListView.as_view(), name="flow-subscriptions"),
     path("subscriptions/all/", AdminSubscriptionListView.as_view(), name="subscriptions-all"),
     path("broadcast/", AdminBroadcastView.as_view(), name="admin-broadcast"),
-    # Panel de notificaciones automáticas (avisos programados): estado + prender/apagar.
-    path("notifications/", AdminNotificationsView.as_view(), name="admin-notifications"),
-    path("notifications/run-live/", AdminNotificationsRunLiveView.as_view(), name="admin-notifications-run-live"),
     path("subscriptions/cancel/", FlowSubscriptionCancelView.as_view(), name="flow-subscription-cancel"),
     path("subscriptions/reactivate/", FlowSubscriptionReactivateView.as_view(), name="flow-subscription-reactivate"),
     path("public/memberships/", PublicMembershipListView.as_view(), name="public-memberships"),
