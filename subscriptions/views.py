@@ -511,11 +511,15 @@ class AdminNotificationsView(APIView):
         }
         # Celery se considera "sano" si alguna tarea corrió hace poco (beat vivo).
         healthy = bool(newest_run) and (timezone.now() - newest_run) < timedelta(minutes=15)
-        return Response({
+        resp = Response({
             "reminders": reminders,
             "email": email,
             "celery": {"healthy": healthy, "last_run_at": newest_run},
         })
+        # Estado en vivo: que NINGUNA capa (nginx/navegador) lo cachee, así el panel
+        # siempre muestra el estado real y no una respuesta vieja.
+        resp["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        return resp
 
     def post(self, request):
         """Prende/apaga un aviso por su ``task`` path."""
