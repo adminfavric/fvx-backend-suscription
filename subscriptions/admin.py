@@ -196,8 +196,8 @@ class ContentItemAdmin(admin.ModelAdmin):
 
 @admin.register(ContentSchedule)
 class ContentScheduleAdmin(admin.ModelAdmin):
-    list_display = ["content", "plan", "starts_at", "ends_at", "date_tbd"]
-    list_filter = ["plan", "date_tbd"]
+    list_display = ["content", "plan", "starts_at", "ends_at", "date_mode"]
+    list_filter = ["plan", "date_mode"]
     search_fields = ["content__title", "plan__name"]
     ordering = ["plan", "-starts_at"]
 

@@ -383,9 +383,10 @@ def build_launch_tiers_from_schedule() -> list:
     sesiones en vivo, su fecha-hora real; para el resto, la fecha «Desde». Cada
     actividad desaparece sola al pasar su fecha/hora.
 
-    Excepción: las marcadas con ``date_tbd`` ("Por confirmar fecha") aparecen
-    SIEMPRE como «Fecha por confirmar» (sin importar su fecha) y se ordenan al
-    final de la columna, hasta que se confirme la fecha y se desmarquen."""
+    Excepciones (``date_mode``): «Por confirmar» aparece SIEMPRE como «Fecha por
+    confirmar» y «Material disponible» como «Material disponible» (ambas sin
+    importar su fecha), ordenadas al final de la columna, hasta que se les ponga
+    una fecha real y se cambie a «Mostrar fecha»."""
     now = timezone.now()
     tiers = []
     plans = Plan.objects.filter(is_public=True, is_active=True).order_by("order", "name")
@@ -396,9 +397,12 @@ def build_launch_tiers_from_schedule() -> list:
         )
         upcoming = []
         for s in rows:
-            if s.date_tbd:
-                # Sin fecha definitiva: siempre visible; clave (1, …) → al final.
+            # Estados sin fecha: siempre visibles; clave (1, …) → al final.
+            if s.date_mode == ContentSchedule.DateMode.TBD:
                 upcoming.append((1, now, s.content.title, "Fecha por confirmar"))
+                continue
+            if s.date_mode == ContentSchedule.DateMode.AVAILABLE:
+                upcoming.append((1, now, s.content.title, "Material disponible"))
                 continue
             start_dt = _schedule_start_dt(s)
             if start_dt <= now:
@@ -623,13 +627,13 @@ class ContentScheduleViewSet(viewsets.ModelViewSet):
             )
         starts_at = data.get("starts_at") or timezone.localdate()
         ends_at = data.get("ends_at") or None
-        raw_tbd = data.get("date_tbd")
-        date_tbd = raw_tbd if isinstance(raw_tbd, bool) else str(raw_tbd).strip().lower() in ("true", "1", "on", "yes")
+        valid_modes = set(ContentSchedule.DateMode.values)
+        date_mode = data.get("date_mode") if data.get("date_mode") in valid_modes else ContentSchedule.DateMode.DATE
         created = []
         for pid in plan_ids:
             cs, _ = ContentSchedule.objects.get_or_create(
                 content_id=content_id, plan_id=pid,
-                defaults={"starts_at": starts_at, "ends_at": ends_at, "date_tbd": date_tbd},
+                defaults={"starts_at": starts_at, "ends_at": ends_at, "date_mode": date_mode},
             )
             created.append(cs)
         ser = self.get_serializer(created, many=True)

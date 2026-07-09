@@ -438,16 +438,22 @@ class ContentSchedule(TimeStampedModel):
     El miembro ve el contenido cuya programación está vigente hoy.
     """
 
+    class DateMode(models.TextChoices):
+        DATE = "date", _("Mostrar fecha")
+        TBD = "tbd", _("Por confirmar")
+        AVAILABLE = "available", _("Material disponible")
+
     content = models.ForeignKey("ContentItem", on_delete=models.CASCADE, related_name="schedules")
     plan = models.ForeignKey("Plan", on_delete=models.CASCADE, related_name="content_schedules")
     starts_at = models.DateField(_("starts at"), default=timezone.localdate, help_text=_("Desde cuándo el contenido está disponible en este plan."))
     ends_at = models.DateField(_("ends at"), null=True, blank=True, help_text=_("Hasta cuándo. Vacío = sin fin."))
-    date_tbd = models.BooleanField(
-        _("por confirmar fecha"), default=False,
+    date_mode = models.CharField(
+        _("mostrar fecha"), max_length=12, choices=DateMode.choices, default=DateMode.DATE,
         help_text=_(
-            "Márcalo si la actividad aún no tiene fecha definitiva. En «Próximas "
-            "actividades» aparecerá como «Fecha por confirmar» y se mantendrá visible "
-            "aunque su fecha «Desde» no sea futura. Al confirmar la fecha, desmárcalo."
+            "Cómo aparece en «Próximas actividades»: «Mostrar fecha» usa la fecha real "
+            "(o la hora de la sesión en vivo) y desaparece al pasar; «Por confirmar» la "
+            "muestra siempre como «Fecha por confirmar»; «Material disponible» la muestra "
+            "siempre como «Material disponible» (contenido sin fecha, ya disponible)."
         ),
     )
 
