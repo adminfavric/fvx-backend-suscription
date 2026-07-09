@@ -380,9 +380,12 @@ def build_launch_tiers_from_schedule() -> list:
     """Arma las columnas de "Próximas actividades" a partir de la **Programación**
     (``admin/programacion``). Por cada membresía pública se listan sus filas de
     Programación cuyo inicio EFECTIVO aún no ha pasado (``> ahora``): para las
-    sesiones en vivo, su fecha-hora real; para el resto, la fecha «Desde». Así el
-    bloque solo muestra lo que viene y cada actividad desaparece sola al pasar su
-    fecha/hora, sin editarlo por separado."""
+    sesiones en vivo, su fecha-hora real; para el resto, la fecha «Desde». Cada
+    actividad desaparece sola al pasar su fecha/hora.
+
+    Excepción: las marcadas con ``date_tbd`` ("Por confirmar fecha") aparecen
+    SIEMPRE como «Fecha por confirmar» (sin importar su fecha) y se ordenan al
+    final de la columna, hasta que se confirme la fecha y se desmarquen."""
     now = timezone.now()
     tiers = []
     plans = Plan.objects.filter(is_public=True, is_active=True).order_by("order", "name")
@@ -393,17 +396,21 @@ def build_launch_tiers_from_schedule() -> list:
         )
         upcoming = []
         for s in rows:
+            if s.date_tbd:
+                # Sin fecha definitiva: siempre visible; clave (1, …) → al final.
+                upcoming.append((1, now, s.content.title, "Fecha por confirmar"))
+                continue
             start_dt = _schedule_start_dt(s)
             if start_dt <= now:
                 continue  # ya comenzó/pasó → ya no es "próxima"
             when = _format_when(s.content.live_start) if s.content.live_start else _format_when_date(s.starts_at)
-            upcoming.append((start_dt, s.content.title, when))
-        upcoming.sort(key=lambda x: x[0])
+            upcoming.append((0, start_dt, s.content.title, when))
+        upcoming.sort(key=lambda x: (x[0], x[1]))
         tiers.append({
             "name": plan.name.upper(),
             "badge": "Acceso completo" if plan.featured else "",
             "featured": bool(plan.featured),
-            "items": [{"title": title, "when": when} for _, title, when in upcoming],
+            "items": [{"title": title, "when": when} for _, _, title, when in upcoming],
         })
     return tiers
 
@@ -616,11 +623,13 @@ class ContentScheduleViewSet(viewsets.ModelViewSet):
             )
         starts_at = data.get("starts_at") or timezone.localdate()
         ends_at = data.get("ends_at") or None
+        raw_tbd = data.get("date_tbd")
+        date_tbd = raw_tbd if isinstance(raw_tbd, bool) else str(raw_tbd).strip().lower() in ("true", "1", "on", "yes")
         created = []
         for pid in plan_ids:
             cs, _ = ContentSchedule.objects.get_or_create(
                 content_id=content_id, plan_id=pid,
-                defaults={"starts_at": starts_at, "ends_at": ends_at},
+                defaults={"starts_at": starts_at, "ends_at": ends_at, "date_tbd": date_tbd},
             )
             created.append(cs)
         ser = self.get_serializer(created, many=True)

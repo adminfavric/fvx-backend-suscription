@@ -121,7 +121,7 @@ class ContentScheduleSerializer(serializers.ModelSerializer):
         model = ContentSchedule
         fields = [
             "id", "content", "content_title", "content_kind", "plan", "plan_name",
-            "starts_at", "ends_at", "created",
+            "starts_at", "ends_at", "date_tbd", "created",
         ]
         read_only_fields = ["id", "content_title", "content_kind", "plan_name", "created"]
 

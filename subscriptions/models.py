@@ -442,6 +442,14 @@ class ContentSchedule(TimeStampedModel):
     plan = models.ForeignKey("Plan", on_delete=models.CASCADE, related_name="content_schedules")
     starts_at = models.DateField(_("starts at"), default=timezone.localdate, help_text=_("Desde cuándo el contenido está disponible en este plan."))
     ends_at = models.DateField(_("ends at"), null=True, blank=True, help_text=_("Hasta cuándo. Vacío = sin fin."))
+    date_tbd = models.BooleanField(
+        _("por confirmar fecha"), default=False,
+        help_text=_(
+            "Márcalo si la actividad aún no tiene fecha definitiva. En «Próximas "
+            "actividades» aparecerá como «Fecha por confirmar» y se mantendrá visible "
+            "aunque su fecha «Desde» no sea futura. Al confirmar la fecha, desmárcalo."
+        ),
+    )
 
     class Meta:
         verbose_name = _("content schedule")
