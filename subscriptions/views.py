@@ -34,6 +34,7 @@ from .models import (
     CompMembership,
     ContentItem,
     ContentSchedule,
+    EmailLog,
     Event,
     EventOrder,
     LaunchSchedule,
@@ -45,6 +46,7 @@ from .serializers import (
     CompMembershipSerializer,
     ContentItemSerializer,
     ContentScheduleSerializer,
+    EmailLogSerializer,
     EventSerializer,
     LaunchScheduleSerializer,
     LeadSerializer,
@@ -208,6 +210,26 @@ class AdminSubscriptionListView(APIView):
         return Response({"data": rows})
 
 
+def _log_email(request, kind, subject, *, to_email="", count=0, note="", lead=None):
+    """Registra un correo saliente en el log de auditoría (``EmailLog``), guardando
+    quién lo envió (el usuario logueado). Best-effort: si el log falla, NO rompe el
+    envío (el correo ya salió)."""
+    try:
+        user = getattr(request, "user", None)
+        EmailLog.objects.create(
+            sender=user if getattr(user, "is_authenticated", False) else None,
+            sender_email=(getattr(user, "email", "") or ""),
+            kind=kind,
+            subject=(subject or "")[:255],
+            to_email=to_email or "",
+            recipients_count=count or 0,
+            note=(note or "")[:255],
+            lead=lead,
+        )
+    except Exception:
+        pass
+
+
 class AdminBroadcastView(APIView):
     """
     Correos masivos a miembros (panel admin).
@@ -245,9 +267,10 @@ class AdminBroadcastView(APIView):
                 {"detail": "El asunto y el contenido son obligatorios."}, status=400
             )
 
-        # Prueba: se envía solo a la dirección indicada, sin tocar a los miembros.
+        # Envío individual (a un solo correo, sin tocar a los miembros).
         if test_to:
             sent = send_broadcast(subject, html, [test_to])
+            _log_email(request, EmailLog.Kind.INDIVIDUAL, subject, to_email=test_to, count=sent)
             return Response({"sent": sent, "test": True})
 
         try:
@@ -261,7 +284,24 @@ class AdminBroadcastView(APIView):
                 {"detail": "No hay miembros activos para ese criterio."}, status=400
             )
         sent = send_broadcast(subject, html, recipients)
+        plan_names = ", ".join(
+            Plan.objects.filter(id__in=ids).values_list("name", flat=True)
+        ) if ids else "Todos los miembros"
+        _log_email(request, EmailLog.Kind.BROADCAST, subject, count=sent, note=plan_names)
         return Response({"sent": sent, "recipients": len(recipients)})
+
+
+class EmailLogViewSet(viewsets.ReadOnlyModelViewSet):
+    """Historial de auditoría de correos salientes (masivos, individuales y
+    respuestas): quién envió qué, a quién/cuántos y cuándo. Solo lectura."""
+
+    queryset = EmailLog.objects.select_related("sender", "lead").all()
+    serializer_class = EmailLogSerializer
+    permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ["kind"]
+    search_fields = ["sender_email", "subject", "to_email", "note"]
+    ordering_fields = ["created", "kind", "sender_email"]
 
 
 class FlowSubscriptionsListView(APIView):
@@ -1259,6 +1299,10 @@ class LeadViewSet(viewsets.ReadOnlyModelViewSet):
         lead.is_read = True
         lead.is_replied = True
         lead.save(update_fields=["is_read", "is_replied", "modified"])
+        _log_email(
+            request, EmailLog.Kind.REPLY, subject, to_email=lead.email, count=1,
+            note=(lead.message or lead.subject or "")[:255], lead=lead,
+        )
         return Response(self.get_serializer(lead).data)
 
 

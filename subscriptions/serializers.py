@@ -7,12 +7,28 @@ from .models import (
     CompMembership,
     ContentItem,
     ContentSchedule,
+    EmailLog,
     Event,
     LaunchSchedule,
     Lead,
     PaymentProvider,
     Plan,
 )
+
+
+class EmailLogSerializer(serializers.ModelSerializer):
+    """Historial de correos salientes (solo lectura)."""
+
+    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
+    lead_email = serializers.CharField(source="lead.email", read_only=True, default="")
+
+    class Meta:
+        model = EmailLog
+        fields = [
+            "id", "sender_email", "kind", "kind_label", "subject",
+            "to_email", "recipients_count", "note", "lead", "lead_email", "created",
+        ]
+        read_only_fields = fields
 
 
 class PlanSerializer(serializers.ModelSerializer):

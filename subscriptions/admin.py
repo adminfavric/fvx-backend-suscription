@@ -8,6 +8,7 @@ from .models import (
     CompMembership,
     ContentItem,
     ContentSchedule,
+    EmailLog,
     Event,
     EventOrder,
     LaunchSchedule,
@@ -226,6 +227,18 @@ class LeadAdmin(admin.ModelAdmin):
     search_fields = ["email", "name", "subject", "message"]
     ordering = ["-created"]
     readonly_fields = [f.name for f in Lead._meta.fields]
+
+
+@admin.register(EmailLog)
+class EmailLogAdmin(admin.ModelAdmin):
+    list_display = ["created", "kind", "sender_email", "to_email", "recipients_count", "subject"]
+    list_filter = ["kind", "created"]
+    search_fields = ["sender_email", "to_email", "subject", "note"]
+    ordering = ["-created"]
+    readonly_fields = [f.name for f in EmailLog._meta.fields]
+
+    def has_add_permission(self, request):
+        return False  # log de auditoría: se escribe solo desde los envíos.
 
 
 @admin.register(LaunchSchedule)

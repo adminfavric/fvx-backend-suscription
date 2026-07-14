@@ -6,6 +6,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     AdminBroadcastView,
     AdminSubscriptionListView,
+    EmailLogViewSet,
     CheckoutReturnView,
     CheckoutStartView,
     CompMembershipViewSet,
@@ -54,6 +55,7 @@ router.register(r"content-schedules", ContentScheduleViewSet, basename="content-
 router.register(r"comp-memberships", CompMembershipViewSet, basename="comp-membership")
 router.register(r"payment-links", PaymentLinkViewSet, basename="payment-link")
 router.register(r"leads", LeadViewSet, basename="lead")
+router.register(r"email-logs", EmailLogViewSet, basename="email-log")
 
 urlpatterns = [
     # Espejos de solo lectura desde Flow (admin)

@@ -715,3 +715,42 @@ class Lead(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"[{self.kind}] {self.email}"
+
+
+class EmailLog(TimeStampedModel):
+    """
+    Registro permanente de CADA correo saliente enviado desde el panel: correos
+    masivos, envíos individuales y respuestas a mensajes. Guarda **quién** lo
+    envió (el admin logueado), a quién / a cuántos, el asunto y cuándo. Es un log
+    de auditoría: no se edita ni se borra desde la app.
+    """
+
+    class Kind(models.TextChoices):
+        BROADCAST = "broadcast", _("Masivo")
+        INDIVIDUAL = "individual", _("Individual")
+        REPLY = "reply", _("Respuesta")
+
+    # Quién lo envió: FK al usuario (por si se elimina, queda el email de respaldo).
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="email_logs",
+    )
+    sender_email = models.EmailField(_("sender email"), blank=True)
+    kind = models.CharField(_("kind"), max_length=12, choices=Kind.choices, default=Kind.BROADCAST)
+    subject = models.CharField(_("subject"), max_length=255, blank=True)
+    # Destinatario único (individual/respuesta) o cantidad (masivo).
+    to_email = models.EmailField(_("to email"), blank=True)
+    recipients_count = models.PositiveIntegerField(_("recipients count"), default=0)
+    # Contexto extra: p. ej. las membresías del masivo, o el mensaje respondido.
+    note = models.CharField(_("note"), max_length=255, blank=True)
+    lead = models.ForeignKey(
+        "Lead", null=True, blank=True, on_delete=models.SET_NULL, related_name="email_logs",
+    )
+
+    class Meta:
+        verbose_name = _("email log")
+        verbose_name_plural = _("email logs")
+        ordering = ["-created"]
+
+    def __str__(self) -> str:
+        return f"[{self.kind}] {self.sender_email} → {self.to_email or self.recipients_count}"
