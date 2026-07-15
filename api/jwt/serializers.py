@@ -19,11 +19,18 @@ class FvxTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
 
     def validate(self, attrs):
-        username = attrs.get(User.USERNAME_FIELD) or attrs.get("username")
+        ident = attrs.get(User.USERNAME_FIELD) or attrs.get("username")
         password = attrs.get("password")
-        if username and password:
+        # Permitir iniciar sesión con el CORREO además del nombre de usuario: si
+        # ingresan un email, lo resolvemos al username real antes de autenticar.
+        if ident and "@" in ident:
+            match = User.objects.filter(email__iexact=ident).order_by("id").first()
+            if match:
+                ident = match.get_username()
+                attrs[User.USERNAME_FIELD] = ident
+        if ident and password:
             try:
-                user = User._default_manager.get_by_natural_key(username)
+                user = User._default_manager.get_by_natural_key(ident)
             except User.DoesNotExist:
                 user = None
             if user is not None and not user.is_active and user.check_password(password):
