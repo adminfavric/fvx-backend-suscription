@@ -53,6 +53,7 @@ class UserSerializer(serializers.ModelSerializer):
             "date_joined",
             "role",
             "role_label",
+            "menu_slugs",
             "phone",
             "photo_url",
             "verified",
@@ -88,6 +89,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
             "is_active",
             "is_staff",
             "role",
+            "menu_slugs",
             "phone",
             "photo_url",
         ]

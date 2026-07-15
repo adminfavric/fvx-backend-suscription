@@ -22,12 +22,15 @@ def user_menu_role_score(user) -> int:
     return ROLE_PRECEDENCE.get(role, 0)
 
 
-def user_can_see_menu_item(user, allowed_roles: list | None) -> bool:
+def user_can_see_menu_item(user, allowed_roles: list | None, slug: str | None = None) -> bool:
     """
     ``allowed_roles`` is a list of role codes (e.g. ``["VIEWER", "ADMIN"]``).
 
     Rules:
       · **Staff** sees ALL items (even those without roles assigned).
+      · **Permisos por persona**: si el usuario tiene una lista explícita de
+        páginas (``user.menu_slugs``), esa MANDA — ve exactamente esas, sin
+        importar el rol. (No aplica a staff, que ve todo.)
       · **Non-staff + no allowed_roles defined** (empty list / ``None``) →
         does NOT see. This forces admins to declare explicitly who can access
         each item; previously empty meant "everyone" which let items slip
@@ -36,6 +39,9 @@ def user_can_see_menu_item(user, allowed_roles: list | None) -> bool:
     """
     if getattr(user, "is_staff", False):
         return True
+    overrides = getattr(user, "menu_slugs", None) or []
+    if overrides:
+        return slug in overrides
     roles = allowed_roles or []
     if not roles:
         return False

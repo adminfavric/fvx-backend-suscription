@@ -59,6 +59,7 @@ class UserViewSet(viewsets.ModelViewSet):
         if not self.request.user.is_staff:
             serializer.validated_data.pop("is_staff", None)
             serializer.validated_data.pop("role", None)
+            serializer.validated_data.pop("menu_slugs", None)
         serializer.save()
 
     def perform_update(self, serializer):
@@ -68,6 +69,7 @@ class UserViewSet(viewsets.ModelViewSet):
         if not self.request.user.is_staff:
             serializer.validated_data.pop("is_staff", None)
             serializer.validated_data.pop("role", None)
+            serializer.validated_data.pop("menu_slugs", None)
         instance = serializer.instance
         validated = serializer.validated_data
         if validated.get("is_active") is False:

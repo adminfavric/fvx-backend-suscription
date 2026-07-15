@@ -63,6 +63,15 @@ class User(AbstractUser, TimeStampedModel, SoftDeletableModel):
     phone = models.CharField(_("phone"), max_length=50, blank=True)
     photo_url = models.URLField(_("photo URL"), max_length=500, blank=True)
     verified = models.BooleanField(_("verified"), default=False)
+    menu_slugs = models.JSONField(
+        _("menu slugs"),
+        default=list,
+        blank=True,
+        help_text=_(
+            "Permisos por persona: lista de slugs de páginas que este usuario "
+            "puede ver. Vacío = ve según su rol. Se ignora para staff (ve todo)."
+        ),
+    )
     ui_preferences = models.JSONField(
         _("UI preferences"),
         default=dict,

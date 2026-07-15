@@ -1,3 +1,5 @@
+import hashlib
+
 from django.core.cache import cache
 from django.db.models import Prefetch
 from rest_framework import viewsets
@@ -38,7 +40,14 @@ class MenuViewSet(viewsets.GenericViewSet):
         # se invalida al editar cualquier Menu/Section/Item (signals → versión).
         menu_param = request.query_params.get("menu_uuid") or "__default__"
         role_score = user_menu_role_score(request.user)
-        cache_key = f"fvx:menu_tree:{menu_cache_version()}:{menu_param}:{role_score}"
+        # Permisos por persona: si el usuario tiene páginas explícitas, su árbol es
+        # propio → firma en la clave de caché (los que no tienen, comparten "0").
+        overrides = getattr(request.user, "menu_slugs", None) or []
+        override_sig = (
+            hashlib.md5(",".join(sorted(overrides)).encode()).hexdigest()[:8]
+            if overrides else "0"
+        )
+        cache_key = f"fvx:menu_tree:{menu_cache_version()}:{menu_param}:{role_score}:{override_sig}"
         cached = cache.get(cache_key)
         if cached is not None:
             return Response(cached)
@@ -63,7 +72,7 @@ class MenuViewSet(viewsets.GenericViewSet):
         for sec in sections:
             items_out = []
             for it in sec.items.all():
-                if not user_can_see_menu_item(request.user, it.allowed_roles):
+                if not user_can_see_menu_item(request.user, it.allowed_roles, it.slug):
                     continue
                 items_out.append(
                     {
@@ -99,3 +108,19 @@ class MenuViewSet(viewsets.GenericViewSet):
         payload = {"menu": menu_payload, "sections": sections_out}
         cache.set(cache_key, payload, MENU_CACHE_TTL)
         return Response(payload)
+
+    @action(detail=False, methods=["get"], url_path="pages")
+    def pages(self, request):
+        """Lista TODAS las páginas del menú (slug + nombre + sección), sin filtrar
+        por el rol de quien pregunta. La usa el formulario de Usuarios para elegir
+        qué páginas ve cada persona."""
+        items = (
+            MenuItem.objects.filter(is_active=True)
+            .select_related("section")
+            .order_by("section__order", "order", "name")
+            .values("slug", "name", "section__name")
+        )
+        return Response([
+            {"slug": it["slug"], "name": it["name"], "section": it["section__name"] or ""}
+            for it in items
+        ])
