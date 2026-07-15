@@ -155,6 +155,7 @@ class UserDetailSerializer(serializers.ModelSerializer):
             "last_login",
             "role",
             "role_label",
+            "menu_slugs",
             "phone",
             "photo_url",
             "verified",
