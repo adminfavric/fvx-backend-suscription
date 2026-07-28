@@ -267,6 +267,58 @@ class AdminCancelSubscriptionView(APIView):
         return Response({"detail": "Suscripción cancelada correctamente."})
 
 
+# Estado de una factura/cobro de Flow → etiqueta. (1 pagada · 2 pendiente ·
+# 3 anulada · 4 morosa; se muestra el código crudo si aparece otro valor.)
+_FLOW_INVOICE_STATUS = {1: "Pagada", 2: "Pendiente", 3: "Anulada", 4: "Morosa"}
+
+
+def _flow_invoices(subscription_id: str) -> list:
+    """Historial de cobros de una suscripción Flow (campo ``invoices`` de
+    ``subscription/get``): por cada ciclo, período, monto y estado."""
+    sub = get_flow_client().get_subscription(subscription_id)
+    out = []
+    for inv in (sub.get("invoices") or []):
+        try:
+            amount = float(inv.get("amount")) if inv.get("amount") is not None else None
+        except (TypeError, ValueError):
+            amount = None
+        try:
+            status_label = _FLOW_INVOICE_STATUS.get(int(inv.get("status")), str(inv.get("status")))
+        except (TypeError, ValueError):
+            status_label = ""
+        out.append({
+            "period_start": (inv.get("period_start") or "")[:10],
+            "period_end": (inv.get("period_end") or "")[:10],
+            "amount": amount,
+            "currency": inv.get("currency"),
+            "status": status_label,
+            "created": (inv.get("created") or "")[:10],
+        })
+    return out
+
+
+class AdminSubscriptionInvoicesView(APIView):
+    """
+    ``GET ?subscription_id=...`` → historial de cobros de una suscripción
+    recurrente. Flow: las facturas (``invoices``) de la suscripción. PayPal: el
+    detalle vive en el panel de PayPal (no se expone aquí).
+    """
+
+    permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
+
+    def get(self, request):
+        sub_id = (request.query_params.get("subscription_id") or "").strip()
+        if not sub_id:
+            return Response({"detail": "subscription_id requerido."}, status=400)
+        cs = CheckoutSession.objects.filter(subscription_id=sub_id).first()
+        if cs and cs.provider == PaymentProvider.PAYPAL:
+            return Response({"invoices": [], "provider": "paypal"})
+        try:
+            return Response({"invoices": _flow_invoices(sub_id), "provider": "flow"})
+        except FlowError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+
 def _log_email(request, kind, subject, *, to_email="", count=0, note="", lead=None):
     """Registra un correo saliente en el log de auditoría (``EmailLog``), guardando
     quién lo envió (el usuario logueado). Best-effort: si el log falla, NO rompe el
