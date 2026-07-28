@@ -188,10 +188,16 @@ class AdminSubscriptionListView(APIView):
             .select_related("plan")
             .order_by("-created")
         )
-        rows = []
+        # Agrupa por persona + plan: las renovaciones/pagos repetidos del mismo plan
+        # (típico en "link de pago", que crea una fila por pago) se juntan en UNA
+        # fila con su ``count`` y su ``history``, en vez de aparecer duplicadas.
+        groups: dict = {}
+        order: list = []
         for cs in qs:
-            rows.append(
-                {
+            gkey = ((cs.email or f"id{cs.id}").strip().lower(), cs.plan_id)
+            is_active = cs.has_period_access if cs.is_period_based else True
+            if gkey not in groups:
+                groups[gkey] = {
                     "id": cs.id,
                     "provider": cs.provider,
                     "provider_label": _PROVIDER_LABELS.get(cs.provider, cs.provider),
@@ -201,13 +207,27 @@ class AdminSubscriptionListView(APIView):
                     "subscription_id": cs.subscription_id,
                     "is_period": cs.is_period_based,
                     "access_until": cs.access_until,
-                    # Para período: vigente si la fecha no venció. Para recurrente:
-                    # se asume activa (el detalle de Flow lo da la vista en vivo).
-                    "is_active": cs.has_period_access if cs.is_period_based else True,
+                    "is_active": is_active,
                     "created": cs.created,
+                    "count": 1,
+                    "history": [],
                 }
-            )
-        return Response({"data": rows})
+                order.append(gkey)
+            else:
+                g = groups[gkey]
+                g["count"] += 1
+                # Guardamos el pago anterior (más viejo) en el historial de la fila.
+                g["history"].append(
+                    {
+                        "id": cs.id,
+                        "provider_label": _PROVIDER_LABELS.get(cs.provider, cs.provider),
+                        "access_until": cs.access_until,
+                        "is_active": is_active,
+                        "created": cs.created,
+                        "subscription_id": cs.subscription_id,
+                    }
+                )
+        return Response({"data": [groups[k] for k in order]})
 
 
 def _log_email(request, kind, subject, *, to_email="", count=0, note="", lead=None):
@@ -1719,9 +1739,11 @@ class MemberAccountView(_MemberApiView):
             .order_by("-created")
         )
         for cs in sessions:
-            # Clave de deduplicado: la suscripción de la pasarela, o la fila local
-            # para las membresías por período (que no tienen subscription_id).
-            key = cs.subscription_id or f"period:{cs.id}"
+            # Deduplicado: recurrente → por la suscripción de la pasarela; período
+            # (link de pago/manual) → por PLAN, para NO mostrar una tarjeta por cada
+            # pago mensual. Como las filas vienen ordenadas por -created, se conserva
+            # el pago más reciente (el de acceso más lejano) de cada membresía.
+            key = cs.subscription_id or f"period-plan:{cs.plan_id}"
             if not cs.is_period_based and not cs.subscription_id:
                 continue  # recurrente sin id de pasarela: nada que mostrar
             if key in seen:
