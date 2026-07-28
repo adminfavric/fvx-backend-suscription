@@ -5,6 +5,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AdminBroadcastView,
+    AdminCancelSubscriptionView,
     AdminSubscriptionListView,
     EmailLogViewSet,
     CheckoutReturnView,
@@ -62,6 +63,7 @@ urlpatterns = [
     path("customers/", FlowCustomersListView.as_view(), name="flow-customers"),
     path("subscriptions/", FlowSubscriptionsListView.as_view(), name="flow-subscriptions"),
     path("subscriptions/all/", AdminSubscriptionListView.as_view(), name="subscriptions-all"),
+    path("subscriptions/admin-cancel/", AdminCancelSubscriptionView.as_view(), name="subscriptions-admin-cancel"),
     path("broadcast/", AdminBroadcastView.as_view(), name="admin-broadcast"),
     path("subscriptions/cancel/", FlowSubscriptionCancelView.as_view(), name="flow-subscription-cancel"),
     path("subscriptions/reactivate/", FlowSubscriptionReactivateView.as_view(), name="flow-subscription-reactivate"),

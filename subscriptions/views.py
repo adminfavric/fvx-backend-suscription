@@ -230,6 +230,43 @@ class AdminSubscriptionListView(APIView):
         return Response({"data": [groups[k] for k in order]})
 
 
+class AdminCancelSubscriptionView(APIView):
+    """
+    ``POST {subscription_id | id, password}`` → el ADMIN cancela la suscripción
+    recurrente (Flow/PayPal) de un cliente. Pide la **contraseña del admin** para
+    confirmar (acción sensible). Los pagos por período (link de pago) NO se
+    cancelan: no cobran solos, vencen por su cuenta.
+    """
+
+    permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
+
+    def post(self, request):
+        # Re-autenticación: el admin debe reingresar su contraseña.
+        if not request.user.check_password(request.data.get("password") or ""):
+            return Response({"detail": "Contraseña incorrecta."}, status=403)
+
+        sub_id = (request.data.get("subscription_id") or "").strip()
+        cs = CheckoutSession.objects.filter(subscription_id=sub_id).first() if sub_id else None
+        if not cs and request.data.get("id"):
+            cs = CheckoutSession.objects.filter(id=request.data.get("id")).first()
+        if not cs:
+            return Response({"detail": "Suscripción no encontrada."}, status=404)
+
+        if cs.is_period_based or not cs.subscription_id:
+            return Response(
+                {"detail": "Es por período (link de pago): no cobra automáticamente, vence sola. No hay nada que cancelar."},
+                status=400,
+            )
+        try:
+            if cs.provider == PaymentProvider.PAYPAL:
+                get_paypal_client().cancel_subscription(cs.subscription_id, reason="Cancelada por el administrador")
+            else:
+                get_flow_client().cancel_subscription(cs.subscription_id, at_period_end=True)
+        except (FlowError, PayPalError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({"detail": "Suscripción cancelada correctamente."})
+
+
 def _log_email(request, kind, subject, *, to_email="", count=0, note="", lead=None):
     """Registra un correo saliente en el log de auditoría (``EmailLog``), guardando
     quién lo envió (el usuario logueado). Best-effort: si el log falla, NO rompe el
