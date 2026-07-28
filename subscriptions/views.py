@@ -2042,6 +2042,26 @@ class CheckoutReturnView(View):
                 existing = _active_subscription_id(
                     flow, session.plan.flow_plan_id, session.flow_customer_id
                 )
+                if not existing:
+                    # Espejo local (consistencia inmediata): si esta persona ya tiene
+                    # una suscripción a este plan registrada aquí, la reutilizamos.
+                    # Cierra la carrera cuando Flow aún NO reporta como "activa" la
+                    # 1ª suscripción y el cliente completa el checkout dos veces
+                    # seguidas (era la causa del doble cobro).
+                    prev = (
+                        CheckoutSession.objects.filter(
+                            email__iexact=session.email,
+                            plan=session.plan,
+                            provider=session.provider,
+                            status=CheckoutSession.Status.SUBSCRIBED,
+                        )
+                        .exclude(pk=session.pk)
+                        .exclude(subscription_id="")
+                        .order_by("-created")
+                        .first()
+                    )
+                    if prev:
+                        existing = prev.subscription_id
                 if existing:
                     session.subscription_id = existing
                 else:
