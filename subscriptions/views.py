@@ -1352,6 +1352,41 @@ class LeadViewSet(viewsets.ReadOnlyModelViewSet):
     search_fields = ["name", "email", "subject", "message"]
     ordering_fields = ["created", "kind"]
 
+    @action(detail=False, methods=["get"])
+    def conversation(self, request):
+        """``GET ?email=...`` → hilo cronológico con esa persona: sus mensajes del
+        sitio y sus respuestas por correo (dirección "in") + los correos que se le
+        enviaron desde el panel (dirección "out", del historial EmailLog)."""
+        email_q = (request.query_params.get("email") or "").strip()
+        if not email_q:
+            return Response({"detail": "email requerido."}, status=400)
+        items = []
+        for lead in Lead.objects.filter(email__iexact=email_q):
+            items.append({
+                "direction": "in",
+                "kind": lead.kind,
+                "kind_label": lead.get_kind_display(),
+                "subject": lead.subject,
+                "body": lead.message,
+                "who": lead.name or lead.email,
+                "created": lead.created,
+            })
+        sent = EmailLog.objects.filter(to_email__iexact=email_q).select_related("sender")
+        for log in sent:
+            items.append({
+                "direction": "out",
+                "kind": log.kind,
+                "kind_label": log.get_kind_display(),
+                "subject": log.subject,
+                # El cuerpo de los enviados no se almacena; se muestra asunto +
+                # contexto (nota) — suficiente para seguir el hilo.
+                "body": log.note,
+                "who": log.sender_email or "Panel",
+                "created": log.created,
+            })
+        items.sort(key=lambda x: x["created"])
+        return Response({"email": email_q, "items": items})
+
     @action(detail=True, methods=["patch"])
     def mark(self, request, pk=None):
         """Marca el mensaje como leído / respondido. Body: ``{is_read?, is_replied?}``."""

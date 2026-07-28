@@ -694,6 +694,9 @@ class Lead(TimeStampedModel):
         NEWSLETTER = "newsletter", _("Newsletter")
         CONTACT = "contact", _("Contact")
         MARATON = "maraton", _("Maratón / event")
+        # Respuesta recibida por CORREO (ingesta IMAP de la casilla del admin):
+        # una clienta contestó un correo enviado desde el panel.
+        EMAIL = "email", _("Correo (respuesta)")
 
     kind = models.CharField(_("kind"), max_length=20, choices=Kind.choices, default=Kind.NEWSLETTER)
     source = models.CharField(_("source"), max_length=60, blank=True, help_text=_("Page/origin, e.g. 'home'."))

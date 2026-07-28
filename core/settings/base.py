@@ -638,6 +638,8 @@ EMAIL_HOST = env("EMAIL_HOST", default="mailpit")
 EMAIL_PORT = env.int("EMAIL_PORT", default=1025)
 EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+# IMAP (ingesta de respuestas → /admin/messages). Reusa usuario/contraseña SMTP.
+EMAIL_IMAP_HOST = env("EMAIL_IMAP_HOST", default="imap.gmail.com")
 EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=False)
 EMAIL_USE_SSL = env.bool("EMAIL_USE_SSL", default=False)
 
