@@ -85,8 +85,10 @@ def test_login_sets_httponly_cookies():
     # Public, JS-readable expiry cookie used by the SPA (hasSession / timeout).
     assert "fvx_access_exp" in resp.cookies
     assert resp.cookies["fvx_access_exp"]["httponly"] == ""  # not HttpOnly
-    # Tokens must NOT leak into the JSON body.
-    assert "access" not in resp.json()
+    # Tokens ALSO travel in the JSON body: SPAs cross-domain no pueden usar la
+    # cookie HttpOnly de terceros y mandan `Authorization: Bearer` (ver
+    # FvxTokenObtainPairView). Same-domain sigue usando las cookies.
+    assert "access" in resp.json()
 
 
 def test_login_wrong_password_rejected():
