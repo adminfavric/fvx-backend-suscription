@@ -6,6 +6,8 @@ stored on ``plan.last_sync_error`` and surfaced via the serializer so the UI can
 show it. Drafts (no amount) are never sent to Flow.
 """
 
+import logging
+
 from django.conf import settings
 from django.http import HttpResponseRedirect, JsonResponse
 from django.utils.decorators import method_decorator
@@ -66,6 +68,8 @@ from .services import (
     sync_plan_to_paypal,
 )
 from .services import member_auth, zoom
+
+logger = logging.getLogger(__name__)
 
 
 class PlanViewSet(viewsets.ModelViewSet):
@@ -1497,6 +1501,7 @@ class MemberRequestCodeView(APIView):
         try:
             member_auth.request_code(email)
         except Exception:  # noqa: BLE001 — no filtrar detalles del email al cliente
+            logger.exception("request-code: fallo enviando el código a %s", email)
             return Response({"detail": "No se pudo enviar el código. Intenta más tarde."}, status=502)
         return Response({"detail": "Código enviado."})
 
