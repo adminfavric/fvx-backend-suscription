@@ -260,6 +260,10 @@ class AdminCancelSubscriptionView(APIView):
         try:
             if cs.provider == PaymentProvider.PAYPAL:
                 get_paypal_client().cancel_subscription(cs.subscription_id, reason="Cancelada por el administrador")
+                # En PayPal el corte es inmediato: se refleja aquí mismo en el
+                # espejo local (no se depende del webhook para el estado).
+                cs.status = CheckoutSession.Status.FAILED
+                cs.save(update_fields=["status", "modified"])
             else:
                 get_flow_client().cancel_subscription(cs.subscription_id, at_period_end=True)
         except (FlowError, PayPalError) as exc:
@@ -1953,6 +1957,10 @@ class MemberCancelView(_MemberApiView):
         try:
             if cs.provider == PaymentProvider.PAYPAL:
                 res = get_paypal_client().cancel_subscription(sub_id, reason="Cancelada por el miembro")
+                # En PayPal el corte es inmediato: se refleja aquí mismo en el
+                # espejo local (no se depende del webhook para el estado).
+                cs.status = CheckoutSession.Status.FAILED
+                cs.save(update_fields=["status", "modified"])
             else:
                 res = get_flow_client().cancel_subscription(sub_id, at_period_end=True)
         except (FlowError, PayPalError) as exc:

@@ -173,6 +173,9 @@ class PayPalClient:
     # ── webhooks ──────────────────────────────────────────────────────────────
     def verify_webhook(self, *, headers: dict, body: str, webhook_id: str) -> bool:
         """POST /v1/notifications/verify-webhook-signature → verification_status."""
+        # Django entrega las cabeceras como "Paypal-Auth-Algo"; se normalizan a
+        # MAYÚSCULAS para que la búsqueda no dependa del casing del framework.
+        headers = {k.upper().replace("_", "-"): v for k, v in headers.items()}
         payload = {
             "auth_algo": headers.get("PAYPAL-AUTH-ALGO"),
             "cert_url": headers.get("PAYPAL-CERT-URL"),
