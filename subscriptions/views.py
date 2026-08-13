@@ -1391,6 +1391,53 @@ class LeadViewSet(viewsets.ReadOnlyModelViewSet):
         items.sort(key=lambda x: x["created"])
         return Response({"email": email_q, "items": items})
 
+    @action(detail=False, methods=["get"])
+    def threads(self, request):
+        """Bandeja agrupada: UNA fila por persona (email, case-insensitive) con su
+        último mensaje y contadores. Evita que una misma clienta aparezca repetida
+        por cada correo que envía; el detalle completo sigue en ``conversation``.
+        Respeta los filtros/búsqueda estándar del ViewSet (kind, search, etc.)."""
+        qs = self.filter_queryset(self.get_queryset())
+        threads: dict[str, dict] = {}
+        for lead in qs:  # ordenado -created → el primero de cada email es el último recibido
+            key = (lead.email or "").strip().lower()
+            t = threads.get(key)
+            if t is None:
+                threads[key] = t = {
+                    "email": lead.email,
+                    "name": lead.name or "",
+                    "last": self.get_serializer(lead).data,
+                    "count": 0,
+                    "unread": 0,
+                    "kinds": [],
+                }
+            t["count"] += 1
+            if not lead.is_read:
+                t["unread"] += 1
+            if lead.kind not in t["kinds"]:
+                t["kinds"].append(lead.kind)
+            if not t["name"] and lead.name:
+                t["name"] = lead.name
+        return Response({"count": len(threads), "results": list(threads.values())})
+
+    @action(detail=False, methods=["post"], url_path="mark-thread")
+    def mark_thread(self, request):
+        """Marca TODOS los mensajes de una persona (por email, case-insensitive).
+        Body: ``{email, is_read?, is_replied?}``. Complemento de ``threads``: al
+        abrir/gestionar una conversación agrupada se actualiza el hilo completo."""
+        email_q = (request.data.get("email") or "").strip()
+        if not email_q:
+            return Response({"detail": "email requerido."}, status=400)
+        updates = {
+            field: bool(request.data[field])
+            for field in ("is_read", "is_replied")
+            if field in request.data
+        }
+        if not updates:
+            return Response({"detail": "Nada que actualizar."}, status=400)
+        updated = Lead.objects.filter(email__iexact=email_q).update(**updates)
+        return Response({"email": email_q, "updated": updated, **updates})
+
     @action(detail=True, methods=["patch"])
     def mark(self, request, pk=None):
         """Marca el mensaje como leído / respondido. Body: ``{is_read?, is_replied?}``."""
@@ -1481,7 +1528,8 @@ class MemberRequestCodeView(APIView):
         is_member = CheckoutSession.objects.filter(
             email__iexact=email, status=CheckoutSession.Status.SUBSCRIBED
         ).exists()
-        is_comp = CompMembership.objects.filter(email__iexact=email, is_active=True).exists()
+        comp = CompMembership.objects.filter(email__iexact=email, is_active=True).first()
+        is_comp = bool(comp and not comp.is_expired)
         if not (is_member or is_comp):
             return Response(
                 {
@@ -1966,6 +2014,63 @@ class MemberCancelView(_MemberApiView):
         except (FlowError, PayPalError) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         return Response(res)
+
+
+class MemberCardChangeStartView(_MemberApiView):
+    """POST (Bearer) {subscription_id?} → inicia el CAMBIO DE TARJETA de la
+    suscripción Flow del miembro. Reusa el registro de tarjeta de Flow
+    (``customer/register``): la nueva tarjeta reemplaza a la registrada y la
+    suscripción sigue igual (mismo ``customerId``). Devuelve la URL de Flow a la
+    que redirigir; al volver, ``MemberCardChangeReturnView`` muestra el resultado."""
+
+    def post(self, request):
+        email = _member_email(request)
+        if not email:
+            return Response({"detail": "No autenticado."}, status=401)
+        sub_id = (request.data.get("subscription_id") or "").strip()
+        qs = CheckoutSession.objects.filter(
+            email__iexact=email,
+            status=CheckoutSession.Status.SUBSCRIBED,
+            provider=PaymentProvider.FLOW,
+        ).exclude(flow_customer_id="")
+        cs = qs.filter(subscription_id=sub_id).first() if sub_id else qs.order_by("-created").first()
+        if not cs:
+            return Response(
+                {"detail": "No encontramos una suscripción con cargo automático de Flow en tu cuenta."},
+                status=404,
+            )
+        url_return = f"{settings.PUBLIC_API_BASE_URL}/api/v1/public/member/card-change/return/"
+        try:
+            reg = get_flow_client().register_customer_card(
+                customer_id=cs.flow_customer_id, url_return=url_return
+            )
+        except FlowError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({"redirect_url": f"{reg['url']}?token={reg['token']}"})
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class MemberCardChangeReturnView(View):
+    """Retorno del navegador tras registrar la nueva tarjeta en Flow: consulta el
+    resultado del registro y redirige al área del miembro con ``?tarjeta=ok|error``."""
+
+    def get(self, request):
+        return self._handle(request)
+
+    def post(self, request):
+        return self._handle(request)
+
+    def _handle(self, request):
+        token = request.GET.get("token") or request.POST.get("token")
+        ok = False
+        if token:
+            try:
+                ok = str(get_flow_client().get_register_status(token).get("status")) == "1"
+            except FlowError:
+                ok = False
+        return HttpResponseRedirect(
+            f"{settings.FRONTEND_BASE_URL}/mi-contenido?tarjeta={'ok' if ok else 'error'}"
+        )
 
 
 def _subscription_is_active(cs: CheckoutSession) -> bool:

@@ -274,7 +274,7 @@ class LaunchScheduleAdmin(admin.ModelAdmin):
 class CompMembershipAdmin(admin.ModelAdmin):
     """Accesos de cortesía / staff (ven el contenido sin suscripción real)."""
 
-    list_display = ["email", "full_name", "all_plans", "is_active", "note", "created"]
+    list_display = ["email", "full_name", "all_plans", "is_active", "expires_at", "note", "created"]
     list_filter = ["is_active", "all_plans"]
     search_fields = ["email", "full_name", "note"]
     filter_horizontal = ["plans"]

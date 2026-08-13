@@ -196,7 +196,7 @@ class CompMembershipSerializer(serializers.ModelSerializer):
         model = CompMembership
         fields = [
             "id", "email", "full_name", "all_plans", "plans", "plan_names",
-            "is_active", "note", "created",
+            "is_active", "expires_at", "note", "created",
         ]
         read_only_fields = ["id", "plan_names", "created"]
 

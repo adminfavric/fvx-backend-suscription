@@ -488,6 +488,10 @@ class CompMembership(TimeStampedModel):
         help_text=_("Si 'all plans' está desmarcado, solo estas membresías."),
     )
     is_active = models.BooleanField(_("active"), default=True)
+    expires_at = models.DateField(
+        _("expires at"), null=True, blank=True,
+        help_text=_("Acceso válido hasta esta fecha inclusive. Vacío = indefinido."),
+    )
     note = models.CharField(_("note"), max_length=255, blank=True)
 
     class Meta:
@@ -498,9 +502,14 @@ class CompMembership(TimeStampedModel):
     def __str__(self) -> str:
         return f"{self.email} (cortesía)"
 
+    @property
+    def is_expired(self) -> bool:
+        """True si tiene fecha de caducidad y ya pasó (vacío = nunca caduca)."""
+        return bool(self.expires_at and self.expires_at < timezone.localdate())
+
     def plan_ids(self) -> list[int]:
-        """IDs de planes a los que da acceso (vacío si está inactivo)."""
-        if not self.is_active:
+        """IDs de planes a los que da acceso (vacío si está inactivo o caducado)."""
+        if not self.is_active or self.is_expired:
             return []
         if self.all_plans:
             return list(Plan.objects.filter(is_active=True).values_list("id", flat=True))

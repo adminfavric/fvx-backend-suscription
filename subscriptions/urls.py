@@ -31,6 +31,8 @@ from .views import (
     FlowSubscriptionsListView,
     MemberAccountView,
     MemberCancelView,
+    MemberCardChangeReturnView,
+    MemberCardChangeStartView,
     MemberContentView,
     MemberEmailCheckView,
     MemberMediaUrlView,
@@ -99,5 +101,7 @@ urlpatterns = [
     path("public/member/content/<int:content_id>/zoom/leave/", MemberZoomLeaveView.as_view(), name="member-zoom-leave"),
     path("public/member/account/", MemberAccountView.as_view(), name="member-account"),
     path("public/member/subscription/cancel/", MemberCancelView.as_view(), name="member-cancel"),
+    path("public/member/card-change/start/", MemberCardChangeStartView.as_view(), name="member-card-change-start"),
+    path("public/member/card-change/return/", MemberCardChangeReturnView.as_view(), name="member-card-change-return"),
     *router.urls,
 ]
