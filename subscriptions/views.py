@@ -41,6 +41,7 @@ from .models import (
     Lead,
     PaymentProvider,
     Plan,
+    SubscriptionCancellation,
 )
 from .serializers import (
     CompMembershipSerializer,
@@ -172,22 +173,60 @@ _PROVIDER_LABELS = {
 }
 
 
+def _admin_label(user) -> str:
+    """Etiqueta legible del admin que ejecuta una acción (email o username)."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return ""
+    return (getattr(user, "email", "") or getattr(user, "username", "") or str(user.pk))
+
+
+def _log_cancellation(cs, **kwargs) -> None:
+    """Registra en la bitácora quién/cuándo canceló. Nunca rompe la operación
+    principal: si falla el log, la cancelación ya se hizo en la pasarela."""
+    try:
+        SubscriptionCancellation.log(cs, **kwargs)
+    except Exception:  # pragma: no cover - solo bitácora
+        pass
+
+
 class AdminSubscriptionListView(APIView):
     """
     Lista GENÉRICA de suscripciones (todas las pasarelas) para el admin, desde el
     espejo local ``CheckoutSession`` que unifica Flow, PayPal, link de pago y
-    manual. Muestra solo las ACTIVAS (``subscribed``) con su ``provider`` (origen),
-    plan, cliente, estado y vencimiento (para las de período).
+    manual. Muestra las ACTIVAS (``subscribed``) con su ``provider`` (origen),
+    plan, cliente, estado y vencimiento (para las de período). Con
+    ``?include_inactive=1`` incluye además las recurrentes que ya NO están
+    activas (canceladas/terminadas), cada una con su ``cancellation``: quién la
+    canceló (miembro / admin / pasarela), cuándo y si fue al final del período.
     """
 
     permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
 
     def get(self, request):
+        include_inactive = str(request.query_params.get("include_inactive", "")).lower() in ("1", "true", "yes")
+        statuses = [CheckoutSession.Status.SUBSCRIBED]
+        if include_inactive:
+            statuses.append(CheckoutSession.Status.FAILED)
         qs = (
-            CheckoutSession.objects.filter(status=CheckoutSession.Status.SUBSCRIBED)
+            CheckoutSession.objects.filter(status__in=statuses)
             .select_related("plan")
             .order_by("-created")
         )
+        if include_inactive:
+            # Las "failed" solo interesan si llegaron a ser una suscripción real
+            # (tienen id de pasarela); los checkouts abandonados no.
+            qs = qs.exclude(status=CheckoutSession.Status.FAILED, subscription_id="")
+        # Última cancelación registrada por suscripción (bitácora).
+        cancellations: dict[str, dict] = {}
+        for c in SubscriptionCancellation.objects.exclude(subscription_id="").order_by("created"):
+            cancellations[c.subscription_id] = {
+                "actor": c.actor,
+                "actor_label": c.get_actor_display(),
+                "actor_detail": c.actor_detail,
+                "at_period_end": c.at_period_end,
+                "reason": c.reason,
+                "created": c.created,
+            }
         # Agrupa por persona + plan: las renovaciones/pagos repetidos del mismo plan
         # (típico en "link de pago", que crea una fila por pago) se juntan en UNA
         # fila con su ``count`` y su ``history``, en vez de aparecer duplicadas.
@@ -195,7 +234,8 @@ class AdminSubscriptionListView(APIView):
         order: list = []
         for cs in qs:
             gkey = ((cs.email or f"id{cs.id}").strip().lower(), cs.plan_id)
-            is_active = cs.has_period_access if cs.is_period_based else True
+            is_subscribed = cs.status == CheckoutSession.Status.SUBSCRIBED
+            is_active = (cs.has_period_access if cs.is_period_based else True) if is_subscribed else False
             if gkey not in groups:
                 groups[gkey] = {
                     "id": cs.id,
@@ -208,6 +248,8 @@ class AdminSubscriptionListView(APIView):
                     "is_period": cs.is_period_based,
                     "access_until": cs.access_until,
                     "is_active": is_active,
+                    "status": cs.status,
+                    "cancellation": cancellations.get(cs.subscription_id) if cs.subscription_id else None,
                     "created": cs.created,
                     "count": 1,
                     "history": [],
@@ -223,6 +265,8 @@ class AdminSubscriptionListView(APIView):
                         "provider_label": _PROVIDER_LABELS.get(cs.provider, cs.provider),
                         "access_until": cs.access_until,
                         "is_active": is_active,
+                        "status": cs.status,
+                        "cancellation": cancellations.get(cs.subscription_id) if cs.subscription_id else None,
                         "created": cs.created,
                         "subscription_id": cs.subscription_id,
                     }
@@ -264,10 +308,17 @@ class AdminCancelSubscriptionView(APIView):
                 # espejo local (no se depende del webhook para el estado).
                 cs.status = CheckoutSession.Status.FAILED
                 cs.save(update_fields=["status", "modified"])
+                at_end = False
             else:
                 get_flow_client().cancel_subscription(cs.subscription_id, at_period_end=True)
+                at_end = True
         except (FlowError, PayPalError) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        _log_cancellation(
+            cs, actor=SubscriptionCancellation.Actor.ADMIN,
+            actor_detail=_admin_label(request.user), at_period_end=at_end,
+            reason=(request.data.get("reason") or "").strip(),
+        )
         return Response({"detail": "Suscripción cancelada correctamente."})
 
 
@@ -1009,6 +1060,12 @@ class FlowSubscriptionCancelView(APIView):
             res = get_flow_client().cancel_subscription(sub_id, at_period_end=bool(at_period_end))
         except FlowError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        cs = CheckoutSession.objects.filter(subscription_id=sub_id).order_by("-created").first()
+        _log_cancellation(
+            cs, actor=SubscriptionCancellation.Actor.ADMIN,
+            actor_detail=_admin_label(request.user), at_period_end=bool(at_period_end),
+            reason=(request.data.get("reason") or "").strip(), subscription_id=sub_id,
+        )
         return Response(res)
 
 
@@ -2009,10 +2066,16 @@ class MemberCancelView(_MemberApiView):
                 # espejo local (no se depende del webhook para el estado).
                 cs.status = CheckoutSession.Status.FAILED
                 cs.save(update_fields=["status", "modified"])
+                at_end = False
             else:
                 res = get_flow_client().cancel_subscription(sub_id, at_period_end=True)
+                at_end = True
         except (FlowError, PayPalError) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        _log_cancellation(
+            cs, actor=SubscriptionCancellation.Actor.MEMBER, actor_detail=email,
+            at_period_end=at_end, reason=(request.data.get("reason") or "").strip(),
+        )
         return Response(res)
 
 

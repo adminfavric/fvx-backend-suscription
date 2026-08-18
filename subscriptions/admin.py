@@ -6,6 +6,7 @@ from django.utils.translation import gettext_lazy as _
 from .models import (
     CheckoutSession,
     CompMembership,
+    SubscriptionCancellation,
     ContentItem,
     ContentSchedule,
     EmailLog,
@@ -279,3 +280,21 @@ class CompMembershipAdmin(admin.ModelAdmin):
     search_fields = ["email", "full_name", "note"]
     filter_horizontal = ["plans"]
     ordering = ["email"]
+
+
+@admin.register(SubscriptionCancellation)
+class SubscriptionCancellationAdmin(admin.ModelAdmin):
+    """Bitácora de cancelaciones (solo lectura): quién, cuándo y cómo."""
+
+    list_display = ["created", "email", "subscription_id", "provider", "actor", "actor_detail", "at_period_end", "reason"]
+    list_filter = ["actor", "provider", "at_period_end"]
+    search_fields = ["email", "subscription_id", "actor_detail", "reason"]
+    readonly_fields = [f.name for f in SubscriptionCancellation._meta.fields]
+    ordering = ["-created"]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+

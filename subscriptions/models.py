@@ -766,3 +766,55 @@ class EmailLog(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"[{self.kind}] {self.sender_email} → {self.to_email or self.recipients_count}"
+
+
+class SubscriptionCancellation(TimeStampedModel):
+    """
+    Bitácora de CANCELACIONES de suscripciones recurrentes: registra **quién**
+    canceló (el propio miembro desde "Mi suscripción", un admin desde el panel, o
+    la pasarela/reconciliación cuando la suscripción dejó de estar activa allá
+    sin que nadie lo pidiera aquí), **cuándo** y si fue al final del período.
+    Responde la pregunta "¿por qué esta persona ya no tiene acceso?" sin ir a Flow.
+    """
+
+    class Actor(models.TextChoices):
+        MEMBER = "member", _("El miembro (Mi suscripción)")
+        ADMIN = "admin", _("Administrador (panel)")
+        GATEWAY = "gateway", _("Pasarela / reconciliación")
+
+    session = models.ForeignKey(
+        "CheckoutSession", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="cancellations",
+    )
+    subscription_id = models.CharField(_("subscription id"), max_length=120, db_index=True)
+    email = models.EmailField(_("email"), blank=True)
+    provider = models.CharField(_("provider"), max_length=20, blank=True)
+    actor = models.CharField(_("actor"), max_length=12, choices=Actor.choices)
+    # Quién exactamente (admin logueado; o el email del miembro; o el estado de la pasarela).
+    actor_detail = models.CharField(_("actor detail"), max_length=255, blank=True)
+    at_period_end = models.BooleanField(_("at period end"), default=True)
+    reason = models.CharField(_("reason"), max_length=255, blank=True)
+
+    class Meta:
+        verbose_name = _("subscription cancellation")
+        verbose_name_plural = _("subscription cancellations")
+        ordering = ["-created"]
+
+    def __str__(self) -> str:
+        return f"[{self.actor}] {self.subscription_id} ({self.email})"
+
+    @classmethod
+    def log(cls, cs, *, actor: str, actor_detail: str = "", at_period_end: bool = True,
+            reason: str = "", subscription_id: str = ""):
+        """Registra una cancelación. Tolerante: si falla no debe romper la
+        cancelación en sí (se envuelve en try en los llamadores)."""
+        return cls.objects.create(
+            session=cs,
+            subscription_id=subscription_id or (cs.subscription_id if cs else ""),
+            email=(cs.email if cs else ""),
+            provider=(cs.provider if cs else ""),
+            actor=actor,
+            actor_detail=actor_detail[:255],
+            at_period_end=at_period_end,
+            reason=reason[:255],
+        )

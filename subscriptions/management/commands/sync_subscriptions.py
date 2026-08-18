@@ -22,7 +22,7 @@ correr a diario vía cron.
 
 from django.core.management.base import BaseCommand
 
-from subscriptions.models import CheckoutSession, PaymentProvider
+from subscriptions.models import CheckoutSession, PaymentProvider, SubscriptionCancellation
 from subscriptions.services import (
     FlowError,
     PayPalError,
@@ -78,6 +78,21 @@ class Command(BaseCommand):
             if not dry:
                 cs.status = CheckoutSession.Status.FAILED
                 cs.save(update_fields=["status", "modified"])
+                # Bitácora: si NADIE la canceló desde aquí (miembro/admin), la
+                # detección viene de la pasarela (canceló al final del período,
+                # impago, terminada en el panel de Flow/PayPal, etc.).
+                if not SubscriptionCancellation.objects.filter(
+                    subscription_id=cs.subscription_id
+                ).exists():
+                    try:
+                        SubscriptionCancellation.log(
+                            cs, actor=SubscriptionCancellation.Actor.GATEWAY,
+                            actor_detail=f"{cs.provider}: estado {gateway_status}",
+                            at_period_end=True,
+                            reason="Detectada inactiva en la pasarela (reconciliación)",
+                        )
+                    except Exception:  # pragma: no cover - solo bitácora
+                        pass
 
         self.stdout.write(
             self.style.SUCCESS(
