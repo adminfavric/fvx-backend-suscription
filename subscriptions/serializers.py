@@ -114,16 +114,25 @@ class PublicEventSerializer(serializers.ModelSerializer):
 class ContentItemSerializer(serializers.ModelSerializer):
     """CRUD admin de las piezas de la biblioteca (independientes del plan)."""
 
+    plan_names = serializers.SerializerMethodField()
+
     class Meta:
         model = ContentItem
         fields = [
             "id", "title", "kind", "text", "file_url", "external_url",
-            "image_url", "order", "is_published",
+            "image_url", "order", "is_published", "plan_names",
             # Sesión en vivo (Zoom): número/passcode (solo servidor) + franja.
             "zoom_meeting_number", "zoom_passcode", "live_start", "live_end",
             "created",
         ]
-        read_only_fields = ["id", "created"]
+        read_only_fields = ["id", "plan_names", "created"]
+
+    def get_plan_names(self, obj: ContentItem) -> list[str]:
+        """Membresías en las que la pieza está programada, sin repetir y en orden
+        alfabético. Se resuelve en memoria sobre el ``prefetch_related`` del
+        viewset (``schedules__plan``) para no disparar una consulta por fila."""
+        names = {s.plan.name for s in obj.schedules.all() if s.plan_id}
+        return sorted(names)
 
 
 class ContentScheduleSerializer(serializers.ModelSerializer):

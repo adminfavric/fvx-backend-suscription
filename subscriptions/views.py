@@ -25,7 +25,7 @@ import secrets
 from datetime import datetime, time, timedelta
 
 from django.core.cache import cache
-from django.db.models import Q
+from django.db.models import F, Q
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 
@@ -596,7 +596,11 @@ def build_launch_tiers_from_schedule() -> list:
     plans = Plan.objects.filter(is_public=True, is_active=True).order_by("order", "name")
     for plan in plans:
         rows = (
-            ContentSchedule.objects.filter(plan=plan, content__is_published=True)
+            # ``content__is_removed=False``: el borrado lógico del contenido no
+            # dispara la CASCADE, así que hay que excluirlo aquí a mano.
+            ContentSchedule.objects.filter(
+                plan=plan, content__is_published=True, content__is_removed=False,
+            )
             .select_related("content")
         )
         upcoming = []
@@ -778,13 +782,21 @@ class EventReturnView(View):
 class ContentItemViewSet(viewsets.ModelViewSet):
     """CRUD admin de las piezas de la biblioteca (independientes del plan)."""
 
-    queryset = ContentItem.objects.all().order_by("order", "-created")
+    # ``objects`` es el manager de borrado lógico: las piezas eliminadas
+    # (``is_removed=True``) no vuelven a aparecer. El prefetch alimenta la
+    # columna "Membresías" del listado sin una consulta por fila.
+    queryset = (
+        ContentItem.objects.prefetch_related("schedules__plan")
+        .all()
+        .order_by("order", "-created")
+    )
     serializer_class = ContentItemSerializer
     permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ["kind", "is_published"]
+    # ``schedules__plan`` permite filtrar la biblioteca por membresía.
+    filterset_fields = ["kind", "is_published", "schedules__plan"]
     search_fields = ["title", "text"]
-    ordering_fields = ["title", "order", "created"]
+    ordering_fields = ["title", "kind", "order", "is_published", "created", "modified"]
 
 
 class CompMembershipViewSet(viewsets.ModelViewSet):
@@ -803,13 +815,31 @@ class CompMembershipViewSet(viewsets.ModelViewSet):
 class ContentScheduleViewSet(viewsets.ModelViewSet):
     """CRUD admin de la Programación: asigna contenido a planes con rango de fechas."""
 
-    queryset = ContentSchedule.objects.select_related("content", "plan").all()
+    # ``content__is_removed=False``: una pieza borrada (lógicamente) arrastra sus
+    # programaciones fuera del listado, ya que la CASCADE de la FK no se dispara
+    # con el borrado lógico. Las filas siguen en la base por si se recupera.
+    # Las anotaciones replican con el MISMO nombre las columnas que la tabla del
+    # admin muestra (``content_title``, ``content_kind``, ``plan_name``), para
+    # que ordenar por el encabezado funcione sin traducir el parámetro.
+    queryset = (
+        ContentSchedule.objects.select_related("content", "plan")
+        .filter(content__is_removed=False)
+        .annotate(
+            content_title=F("content__title"),
+            content_kind=F("content__kind"),
+            plan_name=F("plan__name"),
+        )
+    )
     serializer_class = ContentScheduleSerializer
     permission_classes = [IsAuthenticated, IsAdminOrReadOnly]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ["plan", "content"]
+    # ``content__kind`` permite filtrar la programación por tipo (video, zoom…).
+    filterset_fields = ["plan", "content", "content__kind", "date_mode"]
     search_fields = ["content__title", "plan__name"]
-    ordering_fields = ["starts_at", "ends_at", "created"]
+    ordering_fields = [
+        "starts_at", "ends_at", "created", "date_mode",
+        "content_title", "content_kind", "plan_name",
+    ]
 
     @staticmethod
     def _plan_ids(data) -> list:

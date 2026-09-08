@@ -178,12 +178,12 @@ class CheckoutSessionAdmin(admin.ModelAdmin):
 
 @admin.register(ContentItem)
 class ContentItemAdmin(admin.ModelAdmin):
-    list_display = ["title", "kind", "is_published", "live_start", "order", "created"]
-    list_filter = ["kind", "is_published"]
+    list_display = ["title", "kind", "is_published", "is_removed", "live_start", "order", "created"]
+    list_filter = ["kind", "is_published", "is_removed"]
     search_fields = ["title", "text"]
     ordering = ["order"]
     fieldsets = (
-        (None, {"fields": ("title", "kind", "text", "order", "is_published")}),
+        (None, {"fields": ("title", "kind", "text", "order", "is_published", "is_removed")}),
         (_("Archivo / enlace"), {"fields": ("file_url", "external_url", "image_url")}),
         (_("Sesión en vivo (Zoom)"), {
             "fields": ("zoom_meeting_number", "zoom_passcode", "live_start", "live_end"),
@@ -194,6 +194,13 @@ class ContentItemAdmin(admin.ModelAdmin):
             ),
         }),
     )
+
+    def get_queryset(self, request):
+        """El admin de Django es la ÚNICA vía para recuperar una pieza borrada
+        (el panel de la clienta usa el manager que las oculta), así que aquí
+        listamos también las que tienen ``is_removed=True``. Se distinguen por
+        la columna del mismo nombre y se restauran desmarcándola."""
+        return ContentItem.all_objects.all()
 
 
 @admin.register(ContentSchedule)

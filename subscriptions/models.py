@@ -24,6 +24,8 @@ from django.db import models
 from django.utils import timezone
 from django.utils.text import slugify
 from django.utils.translation import gettext_lazy as _
+from model_utils.managers import SoftDeletableManager
+from model_utils.models import SoftDeletableModel
 
 from api.models.base import BaseModelGeneric, TimeStampedModel
 
@@ -339,14 +341,28 @@ class CheckoutSession(TimeStampedModel):
         return bool(self.access_until and self.access_until >= timezone.localdate())
 
 
-class ContentItem(TimeStampedModel):
+class ContentItem(TimeStampedModel, SoftDeletableModel):
     """
     Pieza de contenido de la BIBLIOTECA (video/audio/PDF/imagen/texto/Zoom/enlace).
     Es **independiente del plan**: se asigna a uno o varios planes mediante
     ``ContentSchedule`` (la "Programación"). El archivo se sube vía
     ``/api/v1/uploads/`` (``file_url``); los links externos (YouTube/Zoom) van en
     ``external_url``.
+
+    **Borrado lógico.** Una pieza puede estar referenciada por programaciones,
+    por recordatorios ya enviados y por el historial de lo que vieron los
+    miembros: borrarla de verdad se llevaría todo eso por delante. Por eso
+    hereda de ``SoftDeletableModel``: ``.delete()`` solo marca ``is_removed`` y
+    el manager por defecto (``objects``) ya no la devuelve, así que desaparece
+    del admin y del área de miembros sin perder la fila. Para recuperarla o
+    auditarla está ``ContentItem.all_objects``.
     """
+
+    # Manager explícito para no arrastrar el aviso de obsolescencia que
+    # ``SoftDeletableModel.objects`` emite por defecto (mismo criterio que
+    # ``api.models.user.User``). Filtra ``is_removed=False``.
+    objects = SoftDeletableManager()
+    all_objects = models.Manager()
 
     class Kind(models.TextChoices):
         VIDEO = "video", _("Video")
@@ -393,6 +409,7 @@ class ContentItem(TimeStampedModel):
         verbose_name = _("content item")
         verbose_name_plural = _("content items")
         ordering = ["order", "-created"]
+        indexes = [models.Index(fields=["is_removed"], name="contentitem_is_removed_idx")]
 
     def __str__(self) -> str:
         return f"{self.title} ({self.get_kind_display()})"
