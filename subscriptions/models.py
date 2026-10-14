@@ -544,6 +544,10 @@ class Event(BaseModelGeneric, TimeStampedModel):
     uuid_prefix = "EVT"
 
     subtitle = models.CharField(_("subtitle"), max_length=255, blank=True)
+    location = models.CharField(
+        _("location"), max_length=255, blank=True,
+        help_text=_("Lugar del evento (p. ej. 'Punta Griega'). Se muestra destacado junto a la fecha."),
+    )
     description = models.TextField(_("description"), blank=True)
     date = models.DateTimeField(_("date"), null=True, blank=True, help_text=_("Fecha del evento. Vacío = próximamente."))
     price = models.PositiveIntegerField(

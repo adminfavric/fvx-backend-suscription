@@ -96,7 +96,7 @@ class EventSerializer(serializers.ModelSerializer):
     class Meta:
         model = Event
         fields = [
-            "id", "uuid", "name", "slug", "subtitle", "description", "date",
+            "id", "uuid", "name", "slug", "subtitle", "location", "description", "date",
             "price", "currency", "icon", "image_url", "is_public", "order",
             "is_active", "created", "modified",
         ]
@@ -108,7 +108,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Event
-        fields = ["slug", "name", "subtitle", "description", "date", "price", "icon", "image_url"]
+        fields = ["slug", "name", "subtitle", "location", "description", "date", "price", "icon", "image_url"]
 
 
 class ContentItemSerializer(serializers.ModelSerializer):
