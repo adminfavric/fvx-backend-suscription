@@ -10,6 +10,7 @@ services:
   db:
     image: postgres:15-alpine
     container_name: fvx_suscription_backend_db
+    restart: unless-stopped
     env_file:
       - .env
     volumes:
@@ -29,6 +30,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: fvx_suscription_backend_redis
+    restart: unless-stopped
     # Redis NO se publica al host (igual que db): se alcanza intra-red como
     # `redis:6379`. Evita colisión de puerto entre dos proyectos en la misma máquina.
     networks:
@@ -107,6 +109,7 @@ services:
   web:
     build: .
     container_name: fvx_suscription_backend_web
+    restart: unless-stopped
     command: python manage.py runserver 0.0.0.0:8080
     volumes:
       - .:/app
